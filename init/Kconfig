@@ -924,6 +924,24 @@ config NUMA_BALANCING_DEFAULT_ENABLED
 	  If set, automatic NUMA balancing will be enabled if running on a NUMA
 	  machine.
 
+config ATLAS
+	bool "Enable the ATLAS scheduler"
+	default n
+	depends on HIGH_RES_TIMERS
+	help
+	  This option enables the experimental ATLAS scheduler.
+
+	  Say N, if unsure.
+
+config ATLAS_TRACE
+	bool "Enable tracing support for the ATLAS scheduler"
+	default n
+	depends on ATLAS
+	help
+	  This options enables tracing support for the ATLAS scheduler.
+
+	  Say N if unsure.
+
 menuconfig CGROUPS
 	bool "Control Group support"
 	select KERNFS
