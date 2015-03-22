@@ -329,6 +329,9 @@
 320	common	kexec_file_load		sys_kexec_file_load
 321	common	bpf			sys_bpf
 322	64	execveat		stub_execveat
+323	common	atlas_next		sys_atlas_next
+324	64	atlas_submit		sys_atlas_submit
+325	common	atlas_debug		sys_atlas_debug
 
 #
 # x32-specific system call numbers start at 512 to avoid cache impact
