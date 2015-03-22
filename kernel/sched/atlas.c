@@ -5,6 +5,7 @@
 #include <linux/ktime.h>
 #include "sched.h"
 #include "atlas.h"
+#include "atlas_common.h"
 
 const struct sched_class atlas_sched_class;
 
@@ -22,57 +23,11 @@ unsigned int sysctl_sched_atlas_advance_in_cfs = 0;
 #define PENDING_MOVE_TO_RECOVER      0x10
 #define PENDING_MOVE_TO_ATLAS        0x20
 
-#define ATLAS_DEBUG
-
-enum {
-	DEBUG_SYS_NEXT       = 1UL << 0,
-	DEBUG_SYS_SUBMIT     = 1UL << 1,
-	DEBUG_ENQUEUE        = 1UL << 2,
-	DEBUG_DEQUEUE        = 1UL << 3,
-	DEBUG_PICK_NEXT_TASK = 1UL << 4,
-	DEBUG_SET_CURR_TASK  = 1UL << 5,
-	DEBUG_SWITCHED_TO    = 1UL << 6,
-	DEBUG_PUT_PREV_TASK  = 1UL << 7,
-	DEBUG_CHECK_PREEMPT  = 1UL << 8,
-	DEBUG_RBTREE         = 1UL << 9,
-	DEBUG_TIMER          = 1UL << 10,
-	DEBUG_SUBMISSIONS    = 1UL << 11,
-	DEBUG_SWITCH_SCHED   = 1UL << 11,
-	DEBUG_ADAPT_SEXEC    = 1UL << 13,
-	DEBUG_SLACK_TIME     = 1UL << 14,
-};
-
 enum update_exec_time {
 	UPDATE_EXEC_TIME,
 	NO_UPDATE_EXEC_TIME,
 };
 
-#ifdef ATLAS_DEBUG
-//static const unsigned debug_mask = DEBUG_PICK_NEXT_TASK |
-//		DEBUG_PUT_PREV_TASK | DEBUG_ENQUEUE | DEBUG_DEQUEUE | DEBUG_TIMER | DEBUG_SWITCH_SCHED |
-//		DEBUG_SYS_NEXT;
-
-static const unsigned debug_mask = 0;
-
-static int printk_counter = 0;
-	#define DEBUG(T,STR,...)								\
-		do {										\
-			if (T & debug_mask)  {							\
-				preempt_disable();						\
-				printk_deferred("%d (%d): "#T ": " STR "\n",			\
-						(printk_counter++),				\
-				    		smp_processor_id(),				\
-						##__VA_ARGS__);					\
-				preempt_enable();						\
-			}									\
-		} while(0)
-	
-	#define DEBUG_ON(T) if (debug_mask & (T))
-			
-#else 
-	#define DEBUG(...)
-	#define DEBUG_ON(T) if (0)
-#endif /* ATLAS_DEBUG */
 
 void sched_log(const char *fmt, ...)
 {
@@ -161,7 +116,7 @@ static void enqueue_entity(struct atlas_rq *atlas_rq,
 	//FIXME?
 	RB_CLEAR_NODE(&se->run_node);
 	
-	DEBUG(DEBUG_RBTREE, "enqueue_task_rb_tree");
+	atlas_debug(RBTREE, "enqueue_task_rb_tree");
 	while (*link) {
 		parent = *link;
 		entry = rb_entry(parent, struct sched_atlas_entity, run_node);
@@ -184,7 +139,7 @@ static void enqueue_entity(struct atlas_rq *atlas_rq,
 static void dequeue_entity(struct atlas_rq *atlas_rq,
 		struct sched_atlas_entity *se)
 {
-	DEBUG(DEBUG_RBTREE, "dequeue_task_rb_tree");
+	atlas_debug(RBTREE, "dequeue_task_rb_tree");
 
 	if (atlas_rq->rb_leftmost_se == &se->run_node) {
 		struct rb_node *next_node;
@@ -325,7 +280,7 @@ static inline void __setup_rq_timer(struct atlas_rq *atlas_rq, ktime_t ktime) {
 	assert_raw_spin_locked(&rq_of(atlas_rq)->lock);
 	atlas_rq->timer_end = ktime;
 	
-	DEBUG(DEBUG_TIMER, "timer up to: %lld",
+	atlas_debug(TIMER, "timer up to: %lld",
 			ktime_to_us(atlas_rq->timer_end));
 	
 	BUG_ON(atlas_rq->timer_target == ATLAS_NONE);
@@ -333,7 +288,7 @@ static inline void __setup_rq_timer(struct atlas_rq *atlas_rq, ktime_t ktime) {
 }
 
 static inline void start_slack(struct atlas_rq *atlas_rq, ktime_t slack) {
-	DEBUG(DEBUG_TIMER, "Setup timer for slack");
+	atlas_debug(TIMER, "Setup timer for slack");
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 	slack = ktime_add(slack, ktime_get());
 	atlas_rq->timer_target = ATLAS_SLACK;
@@ -342,7 +297,7 @@ static inline void start_slack(struct atlas_rq *atlas_rq, ktime_t slack) {
 
 static inline void start_job(struct atlas_rq *atlas_rq, struct atlas_job *job) {
 	ktime_t tmp = ktime_get();
-	DEBUG(DEBUG_TIMER, "Setup timer for job");
+	atlas_debug(TIMER, "Setup timer for job");
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 	atlas_rq->timer_target = ATLAS_JOB;
 
@@ -364,7 +319,7 @@ static void reset_slack_time(struct atlas_rq *atlas_rq) {
 
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 
-	DEBUG(DEBUG_TIMER, "reset timer programmed for slack time");
+	atlas_debug(TIMER, "reset timer programmed for slack time");
 }
 
 static void reset_job_time(struct atlas_rq *atlas_rq) {
@@ -377,7 +332,7 @@ static void reset_job_time(struct atlas_rq *atlas_rq) {
 
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 
-	DEBUG(DEBUG_TIMER, "reset timer programmed for job");
+	atlas_debug(TIMER, "reset timer programmed for job");
 }
 
 static int update_execution_time(struct atlas_rq *atlas_rq,
@@ -443,7 +398,7 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 	}
 
 	atlas_rq->timer_target = ATLAS_NONE;
-	DEBUG(DEBUG_TIMER, "timer expired: calling resched_task now");
+	atlas_debug(TIMER, "timer expired: calling resched_task now");
 	
 	/* resched curr */
 	if (rq->curr)
@@ -461,7 +416,6 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
  * switching between the schedulers
  */
 
-#ifdef ATLAS_DEBUG
 static const char * sched_name(const struct sched_class *c) {
 	if (c == &rt_sched_class)
 		return "REALTIME";
@@ -475,7 +429,6 @@ static const char * sched_name(const struct sched_class *c) {
 		return "IDLE";
 	return "UNKNOWN";
 }
-#endif /* ATLAS_DEBUG */
 
 /*
  * scheduler switching stuff
@@ -501,7 +454,7 @@ void atlas_switch_scheduler(struct rq *rq,
 	on_rq = p->on_rq;
 	running = rq->curr == p;
 	
-	DEBUG(DEBUG_SWITCH_SCHED, "pid=%d from %s to %s, on_rq=%d, running=%d",
+	atlas_debug(SWITCH_SCHED, "pid=%d from %s to %s, on_rq=%d, running=%d",
 		p->pid, sched_name(prev_sched_class), sched_name(new_sched_class), on_rq, running);
 	
 	if (on_rq)
@@ -585,10 +538,10 @@ void atlas_cfs_blocked(struct rq *rq, struct task_struct *p) {
 
 static void debug_job(struct atlas_job *s) {
 	if (!s) {
-		printk_deferred("DEBUG_JOBS: NULL\n");
+		printk_deferred("JOBS: NULL\n");
 		return;
 	}
-	printk_deferred("DEBUG_JOBS: %6lld - %6lld (%6lld - %6lld) (%p, ref=%d)\n",
+	printk_deferred("JOBS: %6lld - %6lld (%6lld - %6lld) (%p, ref=%d)\n",
 		ktime_to_ms(ktime_sub(s->sdeadline, s->sexectime)),
 		ktime_to_ms(s->sdeadline),
 		ktime_to_ms(ktime_sub(s->deadline, s->exectime)),
@@ -601,7 +554,7 @@ static void __debug_jobs(struct atlas_rq *atlas_rq) {
 	struct atlas_job *job, *prev = NULL;
 	
 	job = pick_first_job(atlas_rq);
-	printk_deferred("DEBUG_JOBS:\n");
+	printk_deferred("JOBS:\n");
 	while (job) {
 		if (prev) {
 			ktime_t start, end, diff;
@@ -609,7 +562,7 @@ static void __debug_jobs(struct atlas_rq *atlas_rq) {
 			end = job_start(job);
 			diff = ktime_sub(end, start);
 			if (!ktime_zero(diff)) {
-				printk_deferred("DEBUG_JOBS: %6lld - %6lld (gap=%lld)\n",
+				printk_deferred("JOBS: %6lld - %6lld (gap=%lld)\n",
 				ktime_to_ms(start),
 				ktime_to_ms(end),
 				ktime_to_ms(diff));
@@ -864,6 +817,8 @@ void atlas_do_pending_work(struct rq *rq) {
 
 void init_atlas_rq(struct atlas_rq *atlas_rq)
 {
+  init_atlas_debugfs();
+
 	atlas_rq->curr = NULL;
     atlas_rq->tasks_timeline = RB_ROOT;
 	atlas_rq->rb_leftmost_se = NULL;
@@ -1032,16 +987,16 @@ static void check_preempt_curr_atlas(struct rq *rq, struct task_struct *p, int f
 	struct sched_atlas_entity *se = &curr->atlas, *pse = &p->atlas;
 	int sub = (se->job != NULL), psub = (pse->job != NULL);
 	
-	DEBUG(DEBUG_CHECK_PREEMPT, "pid=%d", p->pid);
+	atlas_debug(CHECK_PREEMPT, "pid=%d", p->pid);
 	
 	if (unlikely(se == pse)) {
-		DEBUG(DEBUG_CHECK_PREEMPT, "se == pse; pid=%d don't preempt curr->pid=%d",
+		atlas_debug(CHECK_PREEMPT, "se == pse; pid=%d don't preempt curr->pid=%d",
 			p->pid, curr->pid);
 		return;
 	}
 	
 	if (test_tsk_need_resched(curr)) {
-		DEBUG(DEBUG_CHECK_PREEMPT, "test_tsk_need_resched; pid=%d don't preempt curr->pid=%d",
+		atlas_debug(CHECK_PREEMPT, "test_tsk_need_resched; pid=%d don't preempt curr->pid=%d",
 			p->pid, curr->pid);
 		return;
 	}
@@ -1062,13 +1017,13 @@ static void check_preempt_curr_atlas(struct rq *rq, struct task_struct *p, int f
 		goto preempt;
 	
 no_preempt:
-	DEBUG(DEBUG_CHECK_PREEMPT, "pid=%d don't preempt curr->pid=%d",
+	atlas_debug(CHECK_PREEMPT, "pid=%d don't preempt curr->pid=%d",
 		p->pid, curr->pid);
 
 	return;
 	
 preempt:
-	DEBUG(DEBUG_CHECK_PREEMPT, "pid=%d preempt curr->pid=%d",
+	atlas_debug(CHECK_PREEMPT, "pid=%d preempt curr->pid=%d",
 		p->pid, curr->pid);
 	resched_curr(rq);
 
@@ -1223,7 +1178,7 @@ out:
 		if (atlas_rq->pending_work)
 			resched_curr(rq_of(atlas_rq));
 		
-		DEBUG(DEBUG_PICK_NEXT_TASK, "pid=%d, need_resched=%d",
+		atlas_debug(PICK_NEXT_TASK, "pid=%d, need_resched=%d",
 			task_of(atlas_rq->curr)->pid, test_tsk_need_resched(task_of(atlas_rq->curr)));
 		update_stats_curr_start(atlas_rq, atlas_rq->curr, ktime_get());
 
@@ -1233,7 +1188,7 @@ out:
 
     	return task_of(atlas_rq->curr);
 	} else {
-		DEBUG(DEBUG_PICK_NEXT_TASK, "NULL");
+		atlas_debug(PICK_NEXT_TASK, "NULL");
 		return NULL;
 	}
 }
@@ -1246,7 +1201,7 @@ static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se = &prev->atlas;
 	
-	DEBUG(DEBUG_PUT_PREV_TASK, "pid=%d (on_rq=%d, timer_expired=%d)", prev->pid,
+	atlas_debug(PUT_PREV_TASK, "pid=%d (on_rq=%d, timer_expired=%d)", prev->pid,
 		se->on_rq, (atlas_rq->flags & TIMER_EXPIRED) != 0);
 	
 	/* reset timer */
@@ -1271,7 +1226,7 @@ static void set_curr_task_atlas(struct rq *rq)
 	struct sched_atlas_entity *se = &p->atlas;
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	
-	DEBUG(DEBUG_SET_CURR_TASK, "pid=%d", p->pid);
+	atlas_debug(SET_CURR_TASK, "pid=%d", p->pid);
     update_stats_curr_start(atlas_rq, se, ktime_get());
     
     BUG_ON(rq->atlas.curr);
@@ -1301,7 +1256,7 @@ static void switched_from_atlas(struct rq *rq, struct task_struct *p)
 
 static void switched_to_atlas(struct rq *rq, struct task_struct *p)
 {
-    DEBUG(DEBUG_SWITCHED_TO, "pid=%d", p->pid);
+    atlas_debug(SWITCHED_TO, "pid=%d", p->pid);
 	
 	if (!p->atlas.on_rq)
 		return;
@@ -1822,7 +1777,7 @@ enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer)
 	WARN_ON(!se->job);
 	se->flags |= ATLAS_DEADLINE;
 	
-	DEBUG(DEBUG_TIMER, "deadline missed: pid=%d", task_of(se)->pid);
+	atlas_debug(TIMER, "deadline missed: pid=%d", task_of(se)->pid);
 	wmb();
 	send_sig(SIGXCPU, p, 0);
 	
@@ -1841,7 +1796,7 @@ SYSCALL_DEFINE0(atlas_next)
 	struct atlas_rq *atlas_rq;
 	unsigned long flags;
 
-	DEBUG(DEBUG_SYS_NEXT, "pid=%d policy=%s job=%p", current->pid,
+	atlas_debug(SYS_NEXT, "pid=%d policy=%s job=%p", current->pid,
 		sched_name(current->sched_class), se->job);
 	
 	hrtimer_cancel(&se->timer);	
@@ -1925,7 +1880,7 @@ SYSCALL_DEFINE0(atlas_next)
 		{
 			break;
 		}
-		DEBUG(DEBUG_SYS_NEXT, "pid=%d no job, call schedule now", current->pid);
+		atlas_debug(SYS_NEXT, "pid=%d no job, call schedule now", current->pid);
 
 		if (likely(!signal_pending(current))) {
 			schedule();
@@ -1944,7 +1899,7 @@ SYSCALL_DEFINE0(atlas_next)
 	__set_current_state(TASK_RUNNING);
 	se->state = ATLAS_RUNNING;
 
-	DEBUG(DEBUG_SYS_NEXT, "pid=%d job=%p job->deadline=%llu",
+	atlas_debug(SYS_NEXT, "pid=%d job=%p job->deadline=%llu",
 		current->pid, se->job, ktime_to_us(se->job->deadline));
 	
 	preempt_disable();
@@ -1959,7 +1914,7 @@ out_timer:
 	 * if the deadline has already passed, the callback will be called
 	 * resulting in a scheduler switch to CFS
 	 */
-	DEBUG(DEBUG_SYS_NEXT, "pid=%d setup timer for real_job %p (job %p) (need_resched=%d).",
+	atlas_debug(SYS_NEXT, "pid=%d setup timer for real_job %p (job %p) (need_resched=%d).",
 		current->pid, se->real_job, se->job, test_tsk_need_resched(current));
 
 	hrtimer_start(&se->timer, se->real_job->deadline, HRTIMER_MODE_ABS_PINNED);
@@ -1990,7 +1945,7 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, struct timeval __user *,
 	struct atlas_rq *atlas_rq;
 	unsigned long flags;
 
-	//DEBUG(DEBUG_SYS_SUBMIT, "pid=%u, exectime=0x%p, deadline=0x%p",
+	//atlas_debug(SYS_SUBMIT, "pid=%u, exectime=0x%p, deadline=0x%p",
 	//	pid, exectime, deadline);
 			
 	if (!exectime || !deadline || pid < 0)
@@ -1998,10 +1953,10 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, struct timeval __user *,
 					
 	if (copy_from_user(&lexectime, exectime, sizeof(struct timeval)) ||
 		copy_from_user(&ldeadline, deadline, sizeof(struct timeval))) {
-		DEBUG(DEBUG_SYS_SUBMIT, "bad address");
+		atlas_debug(SYS_SUBMIT, "bad address");
 		return -EFAULT;
 	}
-	DEBUG(DEBUG_SYS_SUBMIT, "pid=%u, exectime=%lld, deadline=%lld, time_base=%s",
+	atlas_debug(SYS_SUBMIT, "pid=%u, exectime=%lld, deadline=%lld, time_base=%s",
 		pid,
 		ktime_to_ms(timeval_to_ktime(lexectime)),
 		ktime_to_ms(timeval_to_ktime(ldeadline)),
@@ -2018,7 +1973,7 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, struct timeval __user *,
 	 * allocate memory for the new job
 	 */
 	job = kmalloc(sizeof(struct atlas_job), 0);
-	DEBUG(DEBUG_SYS_SUBMIT, "job=%p", job);
+	atlas_debug(SYS_SUBMIT, "job=%p", job);
 	if (job == NULL) {
 		return -ENOMEM;
 	}
@@ -2055,11 +2010,11 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, struct timeval __user *,
 	assign_rq_job(atlas_rq, job, ktime_get());
 
 	if (ktime_cmp(job->exectime, job->sexectime) == 0)
-		DEBUG(DEBUG_SYS_SUBMIT, "sexectime == exectime");
+		atlas_debug(SYS_SUBMIT, "sexectime == exectime");
 	else if (ktime_zero(job->sexectime))
-		DEBUG(DEBUG_SYS_SUBMIT, "sexectime == 0");
+		atlas_debug(SYS_SUBMIT, "sexectime == 0");
 	else
-		DEBUG(DEBUG_SYS_SUBMIT, "sexectime < exectime");
+		atlas_debug(SYS_SUBMIT, "sexectime < exectime");
 
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 
@@ -2067,7 +2022,7 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, struct timeval __user *,
 	assign_task_job(t, job);
 	
 out:
-	DEBUG(DEBUG_SYS_SUBMIT, "ready: job=%p", job);
+	atlas_debug(SYS_SUBMIT, "ready: job=%p", job);
 	rcu_read_unlock();
 	put_job(job);
 	return ret;

@@ -2,48 +2,11 @@
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
 #include "sched.h"
+#include "atlas_common.h"
 
 void sched_log(const char *fmt, ...);
 
 #define PENDING_MOVE_TO_CFS   0x1
-
-#define ATLAS_DEBUG
-
-enum {
-		DEBUG_SET_CURR_TASK  = 1UL << 1,
-		DEBUG_ENQUEUE        = 1UL << 2,
-		DEBUG_DEQUEUE        = 1UL << 3,
-		DEBUG_PICK_NEXT_TASK = 1UL << 4,
-		DEBUG_SWITCHED_TO    = 1UL << 6,
-		DEBUG_PUT_PREV_TASK  = 1UL << 7,
-		DEBUG_CHECK_PREEMPT  = 1UL << 8,
-		DEBUG_TIMER          = 1UL << 10,
-		DEBUG_SWITCH_SCHED   = 1UL << 11,
-};
-
-#ifdef ATLAS_DEBUG
-//static const unsigned debug_mask = DEBUG_PICK_NEXT_TASK |
-//		DEBUG_PUT_PREV_TASK | DEBUG_ENQUEUE | DEBUG_DEQUEUE | DEBUG_TIMER | DEBUG_SWITCH_SCHED;
-
-static const unsigned debug_mask = 0;
-
-static int printk_counter = 0;
-	#define DEBUG(T,STR,...) \
-		do { \
-			if (T & debug_mask)  { \
-				preempt_disable(); \
-				printk_deferred("RECOVER: %d (%d): "#T ": " STR "\n", (printk_counter++), \
-					smp_processor_id(), ##__VA_ARGS__); \
-				preempt_enable(); \
-			} \
-		} while(0)
-	
-	#define DEBUG_ON(T) if (debug_mask & (T))
-			
-#else 
-	#define DEBUG(...)
-	#define DEBUG_ON(T) if (0)
-#endif /* ATLAS_DEBUG */
 
 const struct sched_class atlas_recover_sched_class;
 
@@ -268,7 +231,7 @@ static void enqueue_task_atlas_recover(struct rq *rq, struct task_struct *p, int
 	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
 	struct sched_atlas_entity *se = &p->atlas;
 		
-	DEBUG(DEBUG_ENQUEUE, "p->pid=%d job->sexec=%lld job->exec=%lld", p->pid,
+	atlas_debug(ENQUEUE, "p->pid=%d job->sexec=%lld job->exec=%lld", p->pid,
 		se->job ? ktime_to_ns(se->job->sexectime) : -1, se->job ? ktime_to_ns(se->job->exectime) : -1);
 		
 	if (atlas_recover_rq->curr != se)
@@ -289,7 +252,7 @@ static void dequeue_task_atlas_recover(struct rq *rq, struct task_struct *p, int
 	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
 	struct sched_atlas_entity *se = &p->atlas;
 	
-	DEBUG(DEBUG_DEQUEUE, "p->pid=%d job->sexec=%lld job->exec=%lld", p->pid,
+	atlas_debug(DEQUEUE, "p->pid=%d job->sexec=%lld job->exec=%lld", p->pid,
 		se->job ? ktime_to_ns(se->job->sexectime) : -1, se->job ? ktime_to_ns(se->job->exectime) : -1);
 	
 	update_curr_atlas_recover(rq);
@@ -387,7 +350,7 @@ static void switched_from_atlas_recover(struct rq *rq, struct task_struct *p)
 
 static void switched_to_atlas_recover(struct rq *rq, struct task_struct *p)
 {
-    DEBUG(DEBUG_SWITCHED_TO, "pid=%d", p->pid);
+    atlas_debug(SWITCHED_TO, "pid=%d", p->pid);
 	
 	if (!p->atlas.on_recover_rq)
 		return;
@@ -437,7 +400,7 @@ pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 	dequeue_entity(atlas_recover_rq, se);
 
 	
-	DEBUG(DEBUG_PICK_NEXT_TASK, "p->pid=%d job->sexec=%lld job->exec=%lld", task_of(se)->pid,
+	atlas_debug(PICK_NEXT_TASK, "p->pid=%d job->sexec=%lld job->exec=%lld", task_of(se)->pid,
 		ktime_to_ns(se->job->sexectime), ktime_to_ns(se->job->exectime));
 	
 	//update start
@@ -460,7 +423,7 @@ static void set_curr_task_atlas_recover(struct rq *rq)
 	struct sched_atlas_entity *se = &p->atlas;
 	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
 	
-	DEBUG(DEBUG_SET_CURR_TASK, "pid=%d", p->pid);
+	atlas_debug(SET_CURR_TASK, "pid=%d", p->pid);
     update_stats_curr_start(atlas_recover_rq, se, ktime_get()); 
     
     BUG_ON(rq->atlas_recover.curr);
