@@ -1,0 +1,67 @@
+#ifndef _SCHED_ATLAS_H
+#define _SCHED_ATLAS_H
+
+#ifdef CONFIG_ATLAS
+
+#define ATLAS_EXECTIME      0x1
+#define ATLAS_DEADLINE      0x2
+#define ATLAS_CFS_ADVANCED  0x4
+#define ATLAS_PENDING_JOBS  0x8
+
+enum atlas_state {
+	ATLAS_UNDEF,
+	ATLAS_BLOCKED,
+	ATLAS_RUNNING,
+};
+
+
+//needs to be defined here because of trace stuff
+struct atlas_job {
+	struct list_head list;
+	struct rb_node rb_node;
+	struct pid *pid;  //used to map submission -> map AND to distinguish task and gap
+	ktime_t exectime; //relative
+	ktime_t deadline; //absolut
+	ktime_t sdeadline;
+	ktime_t sexectime;
+	atomic_t count;
+};
+
+enum atlas_timer_target {
+	ATLAS_SLACK,
+	ATLAS_JOB,
+	ATLAS_NONE
+};
+
+struct atlas_rq {
+	struct sched_atlas_entity *curr;
+	struct rb_root     tasks_timeline;
+	struct rb_node *rb_leftmost_se;
+	struct rb_root     jobs;
+	raw_spinlock_t			lock;
+	int nr_runnable;
+	struct hrtimer timer; //used for slack time and for time to cfs
+	enum atlas_timer_target timer_target;
+	ktime_t timer_end;
+	struct atlas_job *cfs_job;
+	ktime_t cfs_job_start;
+	unsigned long flags;
+	unsigned long pending_work; //used in core to use callback in atlas
+	struct task_struct *advance_in_cfs;
+	struct task_struct *move_to_atlas;
+	int skip_update_curr;
+};
+
+struct atlas_recover_rq {
+	struct sched_atlas_entity *curr;
+	struct rb_root     tasks_timeline;
+	struct rb_node     *rb_leftmost_se;
+	struct rb_root     jobs;
+	int nr_runnable;
+	struct hrtimer timer;
+	unsigned long flags;
+	unsigned long pending_work; //used in core to use callback in atlas
+};
+#endif
+
+#endif /* _SCHED_ATLAS_H */
