@@ -14,6 +14,10 @@
 #include "cpudeadline.h"
 #include "cpuacct.h"
 
+#ifdef CONFIG_ATLAS
+#include "atlas.h"
+#endif
+
 struct rq;
 struct cpuidle_state;
 
@@ -585,6 +589,10 @@ struct rq {
 	u64 nr_switches;
 
 	struct cfs_rq cfs;
+#ifdef CONFIG_ATLAS
+	struct atlas_rq atlas;
+	struct atlas_recover_rq atlas_recover;
+#endif
 	struct rt_rq rt;
 	struct dl_rq dl;
 
@@ -1242,6 +1250,10 @@ static inline void put_prev_task(struct rq *rq, struct task_struct *prev)
 extern const struct sched_class stop_sched_class;
 extern const struct sched_class dl_sched_class;
 extern const struct sched_class rt_sched_class;
+#ifdef CONFIG_ATLAS
+extern const struct sched_class atlas_sched_class;
+extern const struct sched_class atlas_recover_sched_class;
+#endif
 extern const struct sched_class fair_sched_class;
 extern const struct sched_class idle_sched_class;
 
