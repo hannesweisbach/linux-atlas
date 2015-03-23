@@ -10,18 +10,9 @@ void sched_log(const char *fmt, ...);
 
 const struct sched_class atlas_recover_sched_class;
 
-static inline int ktime_zero(ktime_t a) {
-	return ktime_equal(ktime_set(0,0), a);
-}
-
 static inline struct rq *rq_of(struct atlas_recover_rq *atlas_recover_rq)
 {
 	return container_of(atlas_recover_rq, struct rq, atlas_recover);
-}
-
-static inline struct task_struct *task_of(struct sched_atlas_entity *se)
-{
-	return container_of(se, struct task_struct, atlas);
 }
 
 static inline int hrtimer_start_nowakeup(struct hrtimer *timer, ktime_t tim,
@@ -146,7 +137,7 @@ static void dequeue_entity(struct atlas_recover_rq *atlas_recover_rq,
 	rb_erase(&se->run_node, &atlas_recover_rq->tasks_timeline);
 }
 
-static inline struct sched_atlas_entity *pick_first_entity
+static inline struct sched_atlas_entity *pick_first_entity_recover
 		(struct atlas_recover_rq *atlas_recover_rq)
 {
 	struct rb_node *left = atlas_recover_rq->rb_leftmost_se;
@@ -157,7 +148,7 @@ static inline struct sched_atlas_entity *pick_first_entity
 	return rb_entry(left, struct sched_atlas_entity, run_node);
 }
 
-static inline struct sched_atlas_entity *pick_next_entity
+static inline struct sched_atlas_entity *pick_next_entity_recover
 		(struct sched_atlas_entity *se)
 {
 	struct rb_node *next = rb_next(&se->run_node);
@@ -394,7 +385,7 @@ pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 		return NULL;
 	}
 		
-	se = pick_first_entity(atlas_recover_rq);
+	se = pick_first_entity_recover(atlas_recover_rq);
 
 	atlas_recover_rq->curr = se;
 	dequeue_entity(atlas_recover_rq, se);
