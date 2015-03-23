@@ -151,34 +151,6 @@ static void dequeue_entity(struct atlas_rq *atlas_rq,
 	rb_erase(&se->run_node, &atlas_rq->tasks_timeline);
 }
 
-static struct sched_atlas_entity *pick_first_entity(struct atlas_rq *atlas_rq)
-{
-	struct rb_node *left = atlas_rq->rb_leftmost_se;
-
-	if (!left)
-		return NULL;
-
-	return rb_entry(left, struct sched_atlas_entity, run_node);
-}
-
-static struct sched_atlas_entity *pick_next_entity(struct sched_atlas_entity *se)
-{
-	struct rb_node *next = rb_next(&se->run_node);
-
-	if (!next)
-		return NULL;
-
-	return rb_entry(next, struct sched_atlas_entity, run_node);
-}
-
-static struct atlas_job *pick_first_job(struct atlas_rq *atlas_rq) {
-	struct rb_node *first = rb_first(&atlas_rq->jobs);
-
-	if (!first)
-		return NULL;
-	
-	return rb_entry(first, struct atlas_job, rb_node);
-}
 
 static struct atlas_job *pick_last_job(struct atlas_rq *atlas_rq) {
 	struct rb_node *last = rb_last(&atlas_rq->jobs);
@@ -187,15 +159,6 @@ static struct atlas_job *pick_last_job(struct atlas_rq *atlas_rq) {
 		return NULL;
 	
 	return rb_entry(last, struct atlas_job, rb_node);
-}
-
-static struct atlas_job *pick_next_job(struct atlas_job *s) {
-	struct rb_node *next = rb_next(&s->rb_node);
-	
-	if (!next)
-		return NULL;
-	
-	return rb_entry(next, struct atlas_job, rb_node);
 }
 
 static struct atlas_job *pick_prev_job(struct atlas_job *s) {
@@ -230,10 +193,6 @@ static inline int ktime_neg(ktime_t a) {
 	return ktime_to_ns(a) < 0;
 }
 
-static inline int ktime_zero(ktime_t a) {
-	return ktime_equal(ktime_set(0,0), a);
-}
-
 static inline int ktime_cmp(ktime_t a, ktime_t b) {
 	s64 tmp = ktime_to_ns(ktime_sub(a, b));
 	if (tmp > 0)
@@ -242,10 +201,6 @@ static inline int ktime_cmp(ktime_t a, ktime_t b) {
 		return 0;
 	else
 		return -1;
-}
-
-static inline ktime_t job_start(struct atlas_job *s) {
-	return ktime_sub(s->sdeadline, s->sexectime);
 }
 
 static inline int job_missed_deadline(struct atlas_job *s, ktime_t now) {
@@ -257,10 +212,6 @@ static inline struct rq *rq_of(struct atlas_rq *atlas_rq)
 	return container_of(atlas_rq, struct rq, atlas);
 }
 
-static inline struct task_struct *task_of(struct sched_atlas_entity *se)
-{
-	return container_of(se, struct task_struct, atlas);
-}
 
 
 
@@ -535,81 +486,6 @@ void atlas_cfs_blocked(struct rq *rq, struct task_struct *p) {
 
 
 #ifdef ATLAS_DEBUG
-
-static void debug_job(struct atlas_job *s) {
-	if (!s) {
-		printk_deferred("JOBS: NULL\n");
-		return;
-	}
-	printk_deferred("JOBS: %6lld - %6lld (%6lld - %6lld) (%p, ref=%d)\n",
-		ktime_to_ms(ktime_sub(s->sdeadline, s->sexectime)),
-		ktime_to_ms(s->sdeadline),
-		ktime_to_ms(ktime_sub(s->deadline, s->exectime)),
-		ktime_to_ms(s->deadline),
-		s,
-		atomic_read(&s->count));
-}
-
-static void __debug_jobs(struct atlas_rq *atlas_rq) {
-	struct atlas_job *job, *prev = NULL;
-	
-	job = pick_first_job(atlas_rq);
-	printk_deferred("JOBS:\n");
-	while (job) {
-		if (prev) {
-			ktime_t start, end, diff;
-			start = prev->sdeadline;
-			end = job_start(job);
-			diff = ktime_sub(end, start);
-			if (!ktime_zero(diff)) {
-				printk_deferred("JOBS: %6lld - %6lld (gap=%lld)\n",
-				ktime_to_ms(start),
-				ktime_to_ms(end),
-				ktime_to_ms(diff));
-			}
-		}
-		debug_job(job);
-		prev = job;
-		job = pick_next_job(job);
-	}
-	printk_deferred("======================\n");
-
-}
-
-static void debug_jobs(struct atlas_rq *atlas_rq) {
-	unsigned long flags;
-
-	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-	__debug_jobs(atlas_rq);
-	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
-}
-
-/*
- * rq must be locked
- */
-static void __debug_rq(struct rq *rq) {
-	struct sched_atlas_entity *se;
-	
-	printk_deferred("SCHED_ATLAS: DEBUG rq=%d\n", cpu_of(rq));
-	printk_deferred("    Currently running: %d\n", rq->atlas.nr_runnable);
-	printk_deferred("    Curr: pid=%d\n", rq->atlas.curr ? task_of(rq->atlas.curr)->pid : -1);
-	
-	printk_deferred("    DEBUG tasks_timeline:\n");
-	se = pick_first_entity(&rq->atlas);
-	while (se) {
-		printk_deferred("        pid=%5d, job=%p\n", task_of(se)->pid, se->job);
-		se = pick_next_entity(se);	
-	}
-	printk_deferred("======================\n");
-	debug_jobs(&rq->atlas);
-}
-
-static void debug_rq(struct rq *rq) {
-	unsigned long flags;
-	raw_spin_lock_irqsave(&rq->lock, flags);
-	__debug_rq(rq);
-	raw_spin_unlock_irqrestore(&rq->lock, flags);
-}
 
 static void debug_task(struct task_struct *p) {
 	unsigned counter = 0;
@@ -1709,7 +1585,6 @@ const struct sched_class atlas_sched_class = {
 
 
 #ifdef ATLAS_DEBUG
-#define OP_DEBUG_RUNQUEUE 1
 #define OP_UPDATE_EXECTIME 2
 #define OP_DELETE_JOB 3
 #endif
@@ -1719,9 +1594,6 @@ SYSCALL_DEFINE3(atlas_debug, int, operation, int, arg1, int, arg2)
 #ifdef ATLAS_DEBUG
 	struct rq *rq = &per_cpu(runqueues, 0);
 	switch (operation) {
-		case OP_DEBUG_RUNQUEUE:
-			debug_rq(rq);
-			break;
 		case OP_UPDATE_EXECTIME: {
 			struct atlas_rq *atlas_rq = &rq->atlas;
 			struct atlas_job *job;
