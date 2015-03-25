@@ -2091,6 +2091,10 @@ void __dl_clear_params(struct task_struct *p)
 	dl_se->dl_yielded = 0;
 }
 
+#ifdef CONFIG_ATLAS
+extern enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer);
+#endif
+
 /*
  * Perform scheduler related setup for a newly forked process p.
  * p is forked by current.
@@ -2118,6 +2122,13 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	__dl_clear_params(p);
 
 	INIT_LIST_HEAD(&p->rt.run_list);
+
+#ifdef CONFIG_ATLAS
+	INIT_LIST_HEAD(&p->atlas.jobs);
+	p->atlas.on_rq = 0;
+	hrtimer_init(&p->atlas.timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_PINNED);
+	p->atlas.timer.function = &atlas_timer_task_function;
+#endif
 
 #ifdef CONFIG_PREEMPT_NOTIFIERS
 	INIT_HLIST_HEAD(&p->preempt_notifiers);
@@ -2206,7 +2217,12 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	 * Revert to default priority/policy on fork if requested.
 	 */
 	if (unlikely(p->sched_reset_on_fork)) {
+#ifndef CONFIG_ATLAS
 		if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
+#else
+		if (task_has_dl_policy(p) || task_has_rt_policy(p) ||
+				unlikely(p->policy == SCHED_ATLAS)) {
+#endif
 			p->policy = SCHED_NORMAL;
 			p->static_prio = NICE_TO_PRIO(0);
 			p->rt_priority = 0;
@@ -3147,6 +3163,14 @@ static void __sched notrace __schedule(bool preempt)
 			deactivate_task(rq, prev, DEQUEUE_SLEEP);
 			prev->on_rq = 0;
 
+#ifdef CONFIG_ATLAS
+			/* check if thread was scheduled by cfs to support an
+			 * atlas job */
+			if (unlikely(prev->atlas.flags & ATLAS_CFS_ADVANCED)) {
+				atlas_cfs_blocked(rq, prev);
+			}
+#endif
+
 			/*
 			 * If a worker went to sleep, notify and ask workqueue
 			 * whether it wants to wake up a task to maintain
@@ -3162,6 +3186,16 @@ static void __sched notrace __schedule(bool preempt)
 		}
 		switch_count = &prev->nvcsw;
 	}
+#ifdef CONFIG_ATLAS
+	BUG_ON((rq->atlas.pending_work & 0x3) == 3 && rq->atlas.advance_in_cfs);
+	BUG_ON(rq->atlas.pending_work & 0x2 && rq->atlas.advance_in_cfs);
+
+	if (unlikely(rq->atlas.pending_work))
+		atlas_do_pending_work(rq);
+
+	if (unlikely(rq->atlas_recover.pending_work))
+		atlas_recover_do_pending_work(rq);
+#endif
 
 	if (task_on_rq_queued(prev))
 		update_rq_clock(rq);
@@ -3185,6 +3219,14 @@ static void __sched notrace __schedule(bool preempt)
 	}
 
 	balance_callback(rq);
+	post_schedule(rq);
+
+	sched_preempt_enable_no_resched();
+
+#ifdef CONFIG_ATLAS
+	if (rq->atlas.pending_work || rq->atlas_recover.pending_work)
+		set_tsk_need_resched(next);
+#endif
 }
 
 static inline void sched_submit_work(struct task_struct *tsk)
@@ -3694,6 +3736,10 @@ static void __setscheduler(struct rq *rq, struct task_struct *p,
 		p->sched_class = &dl_sched_class;
 	else if (rt_prio(p->prio))
 		p->sched_class = &rt_sched_class;
+#ifdef CONFIG_ATLAS
+	else if (p->policy == SCHED_ATLAS)
+		p->sched_class = &atlas_sched_class;
+#endif
 	else
 		p->sched_class = &fair_sched_class;
 }
@@ -3804,7 +3850,11 @@ recheck:
 	} else {
 		reset_on_fork = !!(attr->sched_flags & SCHED_FLAG_RESET_ON_FORK);
 
+#ifndef CONFIG_ATLAS
 		if (!valid_policy(policy))
+#else
+		if (!valid_policy(policy) && policy != SCHED_ATLAS)
+#endif
 			return -EINVAL;
 	}
 
@@ -7430,6 +7480,10 @@ void __init sched_init(void)
 		init_cfs_rq(&rq->cfs);
 		init_rt_rq(&rq->rt);
 		init_dl_rq(&rq->dl);
+#ifdef CONFIG_ATLAS
+		init_atlas_rq(&rq->atlas);
+		init_atlas_recover_rq(&rq->atlas_recover);
+#endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
