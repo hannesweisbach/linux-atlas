@@ -392,6 +392,24 @@ static struct ctl_table kern_table[] = {
 	},
 #endif /* CONFIG_NUMA_BALANCING */
 #endif /* CONFIG_SCHED_DEBUG */
+#ifdef CONFIG_ATLAS
+	{
+		.procname	= "sched_atlas_min_slack",
+		.data		= &sysctl_sched_atlas_min_slack,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+	{
+		.procname	= "sched_atlas_advance_in_cfs",
+		.data		= &sysctl_sched_atlas_advance_in_cfs,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+#endif
 	{
 		.procname	= "sched_rt_period_us",
 		.data		= &sysctl_sched_rt_period,
