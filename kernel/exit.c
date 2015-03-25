@@ -60,6 +60,11 @@
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
 
+static void exit_mm(struct task_struct *tsk);
+#ifdef CONFIG_ATLAS
+extern void exit_atlas(struct task_struct *tsk);
+#endif
+
 static void __unhash_process(struct task_struct *p, bool group_dead)
 {
 	nr_threads--;
@@ -738,6 +743,9 @@ void do_exit(long code)
 		acct_process();
 	trace_sched_process_exit(tsk);
 
+#ifdef CONFIG_ATLAS
+	exit_atlas(tsk);
+#endif
 	exit_sem(tsk);
 	exit_shm(tsk);
 	exit_files(tsk);
