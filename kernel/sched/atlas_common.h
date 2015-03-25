@@ -82,6 +82,8 @@ task_of(const struct sched_atlas_entity const *se)
 	return container_of(se, struct task_struct, atlas);
 }
 
+extern void sched_log(const char *fmt, ...);
+
 #define atlas_debug(flag, fmt, ...)                                            \
 	do {                                                                   \
 		if (is_flag_enabled(flag)) {                                   \

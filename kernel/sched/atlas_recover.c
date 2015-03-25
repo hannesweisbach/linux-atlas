@@ -4,8 +4,6 @@
 #include "sched.h"
 #include "atlas_common.h"
 
-void sched_log(const char *fmt, ...);
-
 #define PENDING_MOVE_TO_CFS   0x1
 
 const struct sched_class atlas_recover_sched_class;
