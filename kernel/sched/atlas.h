@@ -1,19 +1,10 @@
-#ifndef _SCHED_ATLAS_H
-#define _SCHED_ATLAS_H
-
-#ifdef CONFIG_ATLAS
+#ifndef _SCHED_ATLAS_INTERNAL_H
+#define _SCHED_ATLAS_INTERNAL_H
 
 #define ATLAS_EXECTIME      0x1
 #define ATLAS_DEADLINE      0x2
 #define ATLAS_CFS_ADVANCED  0x4
 #define ATLAS_PENDING_JOBS  0x8
-
-enum atlas_state {
-	ATLAS_UNDEF,
-	ATLAS_BLOCKED,
-	ATLAS_RUNNING,
-};
-
 
 //needs to be defined here because of trace stuff
 struct atlas_job {
@@ -62,6 +53,5 @@ struct atlas_recover_rq {
 	unsigned long flags;
 	unsigned long pending_work; //used in core to use callback in atlas
 };
-#endif
 
-#endif /* _SCHED_ATLAS_H */
+#endif /* _SCHED_ATLAS_INTERNAL_H */

@@ -3,6 +3,8 @@
 #include <linux/slab.h>
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
+#include <linux/sched/atlas.h>
+
 #include "sched.h"
 #include "atlas.h"
 #include "atlas_common.h"
