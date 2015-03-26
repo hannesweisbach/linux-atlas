@@ -21,7 +21,6 @@ enum debug {
 };
 
 u32 is_flag_enabled(enum debug);
-void init_atlas_debugfs(void);
 
 static inline struct atlas_job *
 pick_first_job(const struct atlas_rq const *atlas_rq)

@@ -695,8 +695,6 @@ void atlas_do_pending_work(struct rq *rq) {
 
 void init_atlas_rq(struct atlas_rq *atlas_rq)
 {
-  init_atlas_debugfs();
-
 	atlas_rq->curr = NULL;
     atlas_rq->tasks_timeline = RB_ROOT;
 	atlas_rq->rb_leftmost_se = NULL;
