@@ -166,17 +166,21 @@ size_t print_rqs(char *buf, size_t size)
 static ssize_t read_file_debug_rq(struct file *file, char __user *user_buf,
 				  size_t count, loff_t *ppos)
 {
-	const static size_t size = 4096;
+	static const size_t size = 4096;
+	static char *buf = NULL;
 	size_t remaining = 0;
 	ssize_t ret;
-	char *buf = kmalloc(size, GFP_KERNEL);
+
+	if (!buf)
+		buf = kmalloc(size, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
-	remaining = print_rqs(buf, size);
+	if (!*ppos)
+		remaining = print_rqs(buf, size);
+
 	ret = simple_read_from_buffer(user_buf, count, ppos, buf, remaining);
-	kfree(buf);
-	return 0;
+	return ret;
 }
 
 static const struct file_operations fops_debug_rq = {
