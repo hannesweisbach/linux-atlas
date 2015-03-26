@@ -16,6 +16,7 @@ struct atlas_job {
 	ktime_t sdeadline;
 	ktime_t sexectime;
 	atomic_t count;
+	uint64_t id;
 };
 
 enum atlas_timer_target {
