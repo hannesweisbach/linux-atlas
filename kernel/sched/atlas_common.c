@@ -5,12 +5,12 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/ktime.h>
+#include <linux/init.h>
 
 #include "sched.h"
 #include "atlas_common.h"
 
 static u32 atlas_debug_flags[NUM_FLAGS];
-static struct dentry *atlas_root;
 static struct dentry *atlas_debug;
 static struct dentry *atlas_debug_rq;
 static struct dentry *atlas_debug_delete;
@@ -195,20 +195,19 @@ static const struct file_operations fops_debug_update = {
 	.llseek = default_llseek,
 };
 
-void init_atlas_debugfs(void)
+static int __init init_atlas_debugfs(void)
 {
 	const umode_t mode = S_IFREG | S_IRUSR | S_IWUSR;
 	enum debug flag;
 
 	memset(&atlas_debug_flags, 0, sizeof(atlas_debug_flags));
 
-	atlas_root = debugfs_create_dir("atlas", NULL);
-	if (!atlas_root)
-		return;
+	atlas_debug = debugfs_create_dir("atlas", NULL);
+	if(atlas_debug == ERR_PTR(-ENODEV))
+	  return ENODEV;
 
-	atlas_debug = debugfs_create_dir("debug", atlas_root);
 	if (!atlas_debug)
-		return;
+		return -1;
 
 	for (flag = SYS_NEXT; flag < NUM_FLAGS; ++flag) {
 		atlas_debug_files[flag] = debugfs_create_bool(
@@ -216,12 +215,15 @@ void init_atlas_debugfs(void)
 				&atlas_debug_flags[flag]);
 	}
 
-	atlas_debug_rq = debugfs_create_file("rq", S_IRUSR, atlas_debug, NULL,
-					     &fops_debug_rq);
-	atlas_debug_delete = debugfs_create_file("delete", S_IRUSR, atlas_debug,
-						 NULL, &fops_debug_delete);
-	atlas_debug_update = debugfs_create_file("update", S_IRUSR, atlas_debug,
-						 NULL, &fops_debug_update);
+	atlas_debug_rq = debugfs_create_file("rq", S_IFREG | S_IRUSR,
+					     atlas_debug, NULL, &fops_debug_rq);
+	atlas_debug_delete = debugfs_create_file("delete", S_IFREG | S_IRUSR,
+						 atlas_debug, NULL,
+						 &fops_debug_delete);
+	atlas_debug_update = debugfs_create_file("update", S_IFREG | S_IRUSR,
+						 atlas_debug, NULL,
+						 &fops_debug_update);
+	return 0;
 }
 
 void deinit_atlas_debugfs(void)
@@ -234,5 +236,6 @@ void deinit_atlas_debugfs(void)
 	debugfs_remove(atlas_debug_delete);
 	debugfs_remove(atlas_debug_update);
 	debugfs_remove(atlas_debug);
-	debugfs_remove(atlas_root);
 }
+
+fs_initcall(init_atlas_debugfs);
