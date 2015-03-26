@@ -695,27 +695,27 @@ void atlas_do_pending_work(struct rq *rq) {
 
 void init_atlas_rq(struct atlas_rq *atlas_rq)
 {
+	printk(KERN_INFO "Initializing ATLAS runqueue on CPU %d\n",
+	       cpu_of(rq_of(atlas_rq)));
+
 	atlas_rq->curr = NULL;
-    atlas_rq->tasks_timeline = RB_ROOT;
+	atlas_rq->tasks_timeline = RB_ROOT;
 	atlas_rq->rb_leftmost_se = NULL;
-    atlas_rq->nr_runnable = 0;
-    printk(KERN_INFO "INIT_ATLAS_RUNQUEUE(%d): %p\n",
-		cpu_of(rq_of(atlas_rq)), atlas_rq);
-    printk(KERN_INFO "sizeof(struct atlas_job)=%zu\n",
-		sizeof(struct atlas_job));
+	atlas_rq->nr_runnable = 0;
 	atlas_rq->jobs = RB_ROOT;
 
-	hrtimer_init(&atlas_rq->timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_PINNED);
+	hrtimer_init(&atlas_rq->timer, CLOCK_MONOTONIC,
+		     HRTIMER_MODE_ABS_PINNED);
 	atlas_rq->timer.function = &timer_rq_func;
 	atlas_rq->timer_target = ATLAS_NONE;
 
 	atlas_rq->flags = 0;
 	atlas_rq->pending_work = 0;
 	atlas_rq->cfs_job = NULL;
-	atlas_rq->cfs_job_start = ktime_set(0,0);
+	atlas_rq->cfs_job_start = ktime_set(0, 0);
 
 	atlas_rq->advance_in_cfs = NULL;
-	atlas_rq->move_to_atlas  = NULL;
+	atlas_rq->move_to_atlas = NULL;
 	atlas_rq->skip_update_curr = 0;
 }
 
