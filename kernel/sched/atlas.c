@@ -288,8 +288,6 @@ static void reset_job_time(struct atlas_rq *atlas_rq) {
 	atlas_debug(TIMER, "reset timer programmed for job");
 }
 
-static int update_execution_time(struct atlas_rq *atlas_rq,
-	struct atlas_job *job, ktime_t delta_exec);
 
 
 static inline void reset_timer(struct atlas_rq *atlas_rq) {
@@ -1378,7 +1376,7 @@ static void assign_rq_job(struct atlas_rq *atlas_rq,
 	check_admission_plan(atlas_rq);
 }
 
-static int update_execution_time(struct atlas_rq *atlas_rq,
+int update_execution_time(struct atlas_rq *atlas_rq,
 	struct atlas_job *job, ktime_t delta_exec) {
 	
 	int ret = 0;
@@ -1585,7 +1583,6 @@ const struct sched_class atlas_sched_class = {
 
 
 #ifdef ATLAS_DEBUG
-#define OP_UPDATE_EXECTIME 2
 #define OP_DELETE_JOB 3
 #endif
 
@@ -1594,25 +1591,6 @@ SYSCALL_DEFINE3(atlas_debug, int, operation, int, arg1, int, arg2)
 #ifdef ATLAS_DEBUG
 	struct rq *rq = &per_cpu(runqueues, 0);
 	switch (operation) {
-		case OP_UPDATE_EXECTIME: {
-			struct atlas_rq *atlas_rq = &rq->atlas;
-			struct atlas_job *job;
-			int nr_job = arg1;
-			unsigned long flags;
-
-			s64 delta_exec = arg2 * 1000 * 1000; /*ns*/	
-
-			raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-			job = pick_first_job(atlas_rq);
-			while (job && nr_job) {
-				job = pick_next_job(job);
-				nr_job--;
-			}
-			if (job)
-				update_execution_time(atlas_rq, job, ns_to_ktime(delta_exec)); 
-			raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
-			break;
-		}
 		case OP_DELETE_JOB: {
 			struct atlas_rq *atlas_rq = &rq->atlas;
 			struct atlas_job *job;

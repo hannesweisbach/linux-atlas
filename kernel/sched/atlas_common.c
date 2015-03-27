@@ -6,9 +6,53 @@
 #include <linux/slab.h>
 #include <linux/ktime.h>
 #include <linux/init.h>
+#include <linux/uaccess.h>
 
 #include "sched.h"
 #include "atlas_common.h"
+
+#define do_for_job(job_id, atlas_rq, job)                                      \
+	if (0) {                                                               \
+	unlock__:                                                              \
+		;                                                              \
+		unlock_runqueues_irqrestore();                                 \
+	}                                                                      \
+	else                                                                   \
+		while (1)                                                      \
+			if (1) {                                               \
+				int cpu;                                       \
+				lock_runqueues_irqsave();                      \
+				for_each_possible_cpu(cpu) /*online?*/         \
+				{                                              \
+					struct rq *rq = cpu_rq(cpu);           \
+					atlas_rq = &rq->atlas;                 \
+					for (job = pick_first_job(atlas_rq);   \
+					     job; job = pick_next_job(job)) {  \
+						if (job->id == job_id) {       \
+							goto loop_begin;       \
+						}                              \
+					}                                      \
+				}                                              \
+				job = NULL;                                    \
+				printk_deferred(KERN_INFO "%s(%d): ATLAS job " \
+							  "%llx not found.\n", \
+						__func__, __LINE__, job_id);   \
+				goto unlock__;                                 \
+			}                                                      \
+			else                                                   \
+				while (1)                                      \
+					if (1) {/*terminated by break */       \
+						goto unlock__;                 \
+					}                                      \
+					else                                   \
+						while (1)                      \
+							if (1) {/*terminated   \
+								   */          \
+								/* normally */ \
+								goto unlock__; \
+							}                      \
+							else                   \
+							loop_begin:
 
 static u32 atlas_debug_flags[NUM_FLAGS];
 static struct dentry *atlas_debug;
@@ -163,6 +207,44 @@ size_t print_rqs(char *buf, size_t size)
 	return offset;
 }
 
+/* Not sure if this is actually correct :( */
+static DEFINE_PER_CPU(unsigned long, rq_irq_flags);
+void lock_runqueues_irqsave(void)
+{
+	int cpu;
+	for_each_possible_cpu(cpu) /*online?*/
+	{
+		struct rq *rq = cpu_rq(cpu);
+		struct atlas_rq *atlas = &rq->atlas;
+		if (cpu == 0) {
+			raw_spin_lock_irqsave(&rq->lock,
+					      per_cpu(rq_irq_flags, cpu));
+		}
+		else {
+			raw_spin_lock(&rq->lock);
+		}
+		raw_spin_lock(&atlas->lock);
+	}
+}
+
+void unlock_runqueues_irqrestore(void)
+{
+	int cpu;
+	for_each_possible_cpu(cpu) /*online?*/
+	{
+		struct rq *rq = cpu_rq(cpu);
+		struct atlas_rq *atlas = &rq->atlas;
+		raw_spin_unlock(&atlas->lock);
+		if (cpu != (num_possible_cpus() - 1)) {
+			raw_spin_unlock(&rq->lock);
+		}
+		else {
+			raw_spin_unlock_irqrestore(&rq->lock,
+						   per_cpu(rq_irq_flags, cpu));
+		}
+	}
+}
+
 static ssize_t read_file_debug_rq(struct file *file, char __user *user_buf,
 				  size_t count, loff_t *ppos)
 {
@@ -179,22 +261,49 @@ static ssize_t read_file_debug_rq(struct file *file, char __user *user_buf,
 	if (!*ppos)
 		remaining = print_rqs(buf, size);
 
+	printk_deferred(KERN_INFO "%s\n", __func__);
 	ret = simple_read_from_buffer(user_buf, count, ppos, buf, remaining);
 	return ret;
 }
 
 static const struct file_operations fops_debug_rq = {
-	.read = read_file_debug_rq,
-	.open = simple_open,
-	.llseek = default_llseek,
+		.read = read_file_debug_rq,
+		.open = simple_open,
+		.llseek = default_llseek,
 };
 
 static const struct file_operations fops_debug_delete = {
-	.open = simple_open,
-	.llseek = default_llseek,
+		.open = simple_open, .llseek = default_llseek,
 };
 
+static ssize_t write_file_debug_update(struct file *file,
+				       const char __user *user_buf,
+				       size_t count, loff_t *ppos)
+{
+	const size_t buffer_size = 128;
+	struct atlas_rq *atlas_rq;
+	struct atlas_job *job;
+	uint64_t job_id;
+	int64_t delta;
+	char buf[buffer_size];
+
+	if (copy_from_user(buf, user_buf, min(sizeof(buf), count)))
+		return -EFAULT;
+
+	if (sscanf(buf, "%llu %lld", &job_id, &delta) != 2)
+		return -EINVAL;
+
+	do_for_job(job_id, atlas_rq, job)
+	{
+		update_execution_time(atlas_rq, job, ns_to_ktime(delta));
+	}
+
+	/* job is NULL if not found */
+	return (job) ? 0 : -ENOENT;
+}
+
 static const struct file_operations fops_debug_update = {
+	.write = write_file_debug_update,
 	.open = simple_open,
 	.llseek = default_llseek,
 };
@@ -207,8 +316,8 @@ static int __init init_atlas_debugfs(void)
 	memset(&atlas_debug_flags, 0, sizeof(atlas_debug_flags));
 
 	atlas_debug = debugfs_create_dir("atlas", NULL);
-	if(atlas_debug == ERR_PTR(-ENODEV))
-	  return ENODEV;
+	if (atlas_debug == ERR_PTR(-ENODEV))
+		return ENODEV;
 
 	if (!atlas_debug)
 		return -1;
@@ -224,7 +333,7 @@ static int __init init_atlas_debugfs(void)
 	atlas_debug_delete = debugfs_create_file("delete", S_IFREG | S_IRUSR,
 						 atlas_debug, NULL,
 						 &fops_debug_delete);
-	atlas_debug_update = debugfs_create_file("update", S_IFREG | S_IRUSR,
+	atlas_debug_update = debugfs_create_file("update", S_IFREG | S_IWUSR,
 						 atlas_debug, NULL,
 						 &fops_debug_update);
 	return 0;
