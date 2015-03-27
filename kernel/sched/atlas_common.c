@@ -307,7 +307,7 @@ static ssize_t write_file_debug_update(struct file *file,
 				       const char __user *user_buf,
 				       size_t count, loff_t *ppos)
 {
-	const size_t buffer_size = 128;
+	const size_t buffer_size = 48;
 	struct atlas_rq *atlas_rq;
 	struct atlas_job *job;
 	uint64_t job_id;
