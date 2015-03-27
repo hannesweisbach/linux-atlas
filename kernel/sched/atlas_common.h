@@ -82,6 +82,8 @@ task_of(const struct sched_atlas_entity const *se)
 }
 
 extern void sched_log(const char *fmt, ...);
+int update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
+			  ktime_t delta_exec);
 
 #define atlas_debug(flag, fmt, ...)                                            \
 	do {                                                                   \
