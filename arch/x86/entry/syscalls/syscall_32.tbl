@@ -388,4 +388,3 @@
 379	i386	pwritev2		sys_pwritev2			compat_sys_pwritev2
 509     i386	atlas_next		sys_atlas_next
 510     i386	atlas_submit		sys_atlas_submit
-511     i386	atlas_debug		sys_atlas_debug

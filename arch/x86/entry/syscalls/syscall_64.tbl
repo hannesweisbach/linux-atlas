@@ -337,7 +337,6 @@
 328	64	pwritev2		sys_pwritev2
 509	common	atlas_next		sys_atlas_next
 510	64	atlas_submit		sys_atlas_submit
-511	common	atlas_debug		sys_atlas_debug
 
 #
 # x32-specific system call numbers start at 512 to avoid cache impact

@@ -272,8 +272,35 @@ static const struct file_operations fops_debug_rq = {
 		.llseek = default_llseek,
 };
 
+static ssize_t write_file_debug_delete(struct file *file,
+				       const char __user *user_buf,
+				       size_t count, loff_t *ppos)
+{
+	const size_t buffer_size = 16;
+	struct atlas_rq *atlas_rq;
+	struct atlas_job *job;
+	uint64_t job_id;
+	char buf[buffer_size];
+
+	if (copy_from_user(buf, user_buf, min(sizeof(buf), count)))
+		return -EFAULT;
+
+	if (sscanf(buf, "%llu", &job_id) != 1)
+		return -EINVAL;
+
+	do_for_job(job_id, atlas_rq, job)
+	{
+		erase_rq_job(atlas_rq, job);
+	}
+
+	/* job is NULL if not found */
+	return (job) ? 0 : -ENOENT;
+}
+
 static const struct file_operations fops_debug_delete = {
-		.open = simple_open, .llseek = default_llseek,
+	.write = write_file_debug_delete,
+	.open = simple_open,
+	.llseek = default_llseek,
 };
 
 static ssize_t write_file_debug_update(struct file *file,
@@ -330,7 +357,7 @@ static int __init init_atlas_debugfs(void)
 
 	atlas_debug_rq = debugfs_create_file("rq", S_IFREG | S_IRUSR,
 					     atlas_debug, NULL, &fops_debug_rq);
-	atlas_debug_delete = debugfs_create_file("delete", S_IFREG | S_IRUSR,
+	atlas_debug_delete = debugfs_create_file("delete", S_IFREG | S_IWUSR,
 						 atlas_debug, NULL,
 						 &fops_debug_delete);
 	atlas_debug_update = debugfs_create_file("update", S_IFREG | S_IWUSR,
