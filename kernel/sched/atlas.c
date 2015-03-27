@@ -314,7 +314,6 @@ static inline void reset_timer(struct atlas_rq *atlas_rq) {
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 }
 
-static inline void erase_rq_job(struct atlas_rq *, struct atlas_job *);
 void atlas_switch_scheduler(struct rq *, struct task_struct *, const struct sched_class *);
 static void update_curr_atlas(struct rq *);
 
@@ -1410,8 +1409,7 @@ out:
 /*
  * atlas_rq->lock must be hold!
  */
-static inline void erase_rq_job(struct atlas_rq *atlas_rq,
-		struct atlas_job *job)
+void erase_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job)
 {	
 	// a job is removed from the rq from next and also in
 	// pick_next_task on cleanup, so there is a race condition
@@ -1578,42 +1576,6 @@ const struct sched_class atlas_sched_class = {
 	.get_rr_interval    = get_rr_interval_atlas,
 
 };
-
-
-
-
-#ifdef ATLAS_DEBUG
-#define OP_DELETE_JOB 3
-#endif
-
-SYSCALL_DEFINE3(atlas_debug, int, operation, int, arg1, int, arg2)
-{
-#ifdef ATLAS_DEBUG
-	struct rq *rq = &per_cpu(runqueues, 0);
-	switch (operation) {
-		case OP_DELETE_JOB: {
-			struct atlas_rq *atlas_rq = &rq->atlas;
-			struct atlas_job *job;
-			int nr_job = arg1;
-			unsigned long flags;
-
-			raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-			job = pick_first_job(atlas_rq);
-			while (job && nr_job) {
-				job = pick_next_job(job);
-				nr_job--;
-			}
-			if (job)
-				erase_rq_job(atlas_rq, job);
-			raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
-			break;
-		}
-		default:
-			break;
-	}
-#endif
-	return 0;
-}
 
 
 /*
