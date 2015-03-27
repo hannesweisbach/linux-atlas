@@ -385,5 +385,4 @@
 376	i386	mlock2			sys_mlock2
 377     i386	atlas_next		sys_atlas_next
 378     i386	atlas_submit		sys_atlas_submit
-379     i386	atlas_debug		sys_atlas_debug
 
