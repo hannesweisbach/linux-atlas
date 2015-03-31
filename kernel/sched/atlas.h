@@ -1,6 +1,8 @@
 #ifndef _SCHED_ATLAS_INTERNAL_H
 #define _SCHED_ATLAS_INTERNAL_H
 
+#include <linux/spinlock.h>
+
 #define ATLAS_EXECTIME      0x1
 #define ATLAS_DEADLINE      0x2
 #define ATLAS_CFS_ADVANCED  0x4
