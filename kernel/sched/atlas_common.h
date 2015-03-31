@@ -90,7 +90,8 @@ void erase_rq_job(struct atlas_rq *, struct atlas_job *);
 	do {                                                                   \
 		if (is_flag_enabled(flag)) {                                   \
 			preempt_disable();                                     \
-			printk_deferred("cpu %d [" #flag "]: " fmt "\n",       \
+			printk_deferred(KERN_DEBUG "cpu %d [" #flag "]: " fmt  \
+						   "\n",                       \
 					smp_processor_id(), ##__VA_ARGS__);    \
 			preempt_enable();                                      \
 		}                                                              \
