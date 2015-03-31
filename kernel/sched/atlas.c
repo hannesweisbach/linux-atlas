@@ -695,6 +695,8 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	printk(KERN_INFO "Initializing ATLAS runqueue on CPU %d\n",
 	       cpu_of(rq_of(atlas_rq)));
 
+	raw_spin_lock_init(&atlas_rq->lock);
+
 	atlas_rq->curr = NULL;
 	atlas_rq->tasks_timeline = RB_ROOT;
 	atlas_rq->rb_leftmost_se = NULL;

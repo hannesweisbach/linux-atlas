@@ -2128,6 +2128,7 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->atlas.on_rq = 0;
 	hrtimer_init(&p->atlas.timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_PINNED);
 	p->atlas.timer.function = &atlas_timer_task_function;
+	spin_lock_init(&p->atlas.jobs_lock);
 #endif
 
 #ifdef CONFIG_PREEMPT_NOTIFIERS
