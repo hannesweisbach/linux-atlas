@@ -916,6 +916,7 @@ preempt:
 
 static int get_slacktime(struct atlas_rq *atlas_rq, ktime_t *slack);
 static void cleanup_rq(struct atlas_rq *atlas_rq, ktime_t ktime);
+static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev);
 
 static struct task_struct *pick_next_task_atlas(struct rq *rq,
 						struct task_struct *prev)
@@ -927,6 +928,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	struct task_struct *p;
 	unsigned long flags;
 	int timer = 1;
+	int need_put = 1;
 
 	/*
 	 * only proceed if there are runnable tasks
@@ -946,6 +948,23 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	atlas_debug(PICK_NEXT_TASK, "SE: %p", atlas_rq->curr);
 	atlas_debug(PICK_NEXT_TASK, "rb_leftmost_se: %p",
 		    atlas_rq->rb_leftmost_se);
+	/* Ok, this needs serious restructuring.
+	 * ATLAS assumes, that put_prev_task has already been called. Linux scheduling
+	 * does not do this anymore - it is pick_next_task's responsibility to do so.
+	 * However, it seems that put_prev_task is only allowed to be called, if the
+	 * scheduler actually returns a task. But ATLAS doesn't know at this point.
+	 * The HOTFIX-solution is to call put_prev_task() if prev->sched_class is the
+	 * ATLAS sched_class. If not, put_prev_task is called just before returning
+	 * the new task. In case ATLAS changes the scheduling class of prev, the
+	 * decision whether put_prev_task was called or not is stored in need_put.
+	 * If we return NULL later, we revert the action of put_prev_task, so it can
+	 * be called later again by a lower sched_class.
+	 */
+	if (prev->sched_class == &atlas_sched_class) {
+		put_prev_task(rq, prev);
+		need_put = 0;
+	}
+
 	se = pick_first_entity(atlas_rq);
 
 	/*
@@ -1063,29 +1082,41 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 unlock_out:
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 
-out:	
+out:
 	if (atlas_rq->curr) {
-		
 		if (atlas_rq->pending_work)
 			resched_curr(rq_of(atlas_rq));
-		
+
 		atlas_debug(PICK_NEXT_TASK, "pid=%d, need_resched=%d",
-			task_of(atlas_rq->curr)->pid, test_tsk_need_resched(task_of(atlas_rq->curr)));
+			    task_of(atlas_rq->curr)->pid,
+			    test_tsk_need_resched(task_of(atlas_rq->curr)));
 		update_stats_curr_start(atlas_rq, atlas_rq->curr, ktime_get());
 
 		if (timer)
 			start_job(atlas_rq, atlas_rq->curr->job);
 
+		atlas_debug(PICK_NEXT_TASK, "Next task: %p",
+			    task_of(atlas_rq->curr));
+		/*
+		 * FIXME: Is it possible to optimize for the case when the
+		 * next task is prev?
+		 * NB: Call only, if return value is actually a task. */
+		if (need_put)
+			put_prev_task(rq, prev);
 
-    	return task_of(atlas_rq->curr);
+		return task_of(atlas_rq->curr);
 	} else {
+		/* We already called put_prev_task, but now we don't have a
+		 * task. since put_prev_task is supposed to be called by the
+		 * sched_class->put_prev_task which actually has a next task, we
+		 * need to revert the actions of put_prev_task.
+		 */
+		if (!need_put)
+			dequeue_entity(atlas_rq, &prev->atlas);
 		atlas_debug(PICK_NEXT_TASK, "NULL");
 		return NULL;
 	}
 }
-
-
-
 
 static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 {
