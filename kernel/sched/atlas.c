@@ -1128,10 +1128,10 @@ static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 {
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se = &prev->atlas;
-	
+
 	atlas_debug(PUT_PREV_TASK, "pid=%d (on_rq=%d, timer_expired=%d)", prev->pid,
 		se->on_rq, (atlas_rq->flags & TIMER_EXPIRED) != 0);
-	
+
 	/* reset timer */
 	reset_job_time(atlas_rq);
 
@@ -1139,7 +1139,7 @@ static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 		update_curr_atlas(rq);
 		enqueue_entity(atlas_rq, se);
 	}
-	
+
 	atlas_rq->curr = NULL;
 }
 
@@ -1795,7 +1795,6 @@ out_timer:
 
 out:	
 	return ret;
-
 }
 
 
