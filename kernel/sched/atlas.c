@@ -620,6 +620,8 @@ void atlas_do_pending_work(struct rq *rq) {
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct task_struct *prev = rq->curr;
 
+	atlas_debug(PENDING_WORK, "%ld\n", atlas_rq->pending_work);
+
 	update_rq_clock(rq);
 
 	if (atlas_rq->pending_work & PENDING_STOP_CFS_ADVANCED) {
