@@ -1788,7 +1788,7 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, struct timeval __user *,
 	/*
 	 * allocate memory for the new job
 	 */
-	job = kmalloc(sizeof(struct atlas_job), 0);
+	job = kmalloc(sizeof(struct atlas_job), GFP_KERNEL);
 	atlas_debug(SYS_SUBMIT, "job=%p", job);
 	if (job == NULL) {
 		return -ENOMEM;
