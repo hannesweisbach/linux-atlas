@@ -332,6 +332,12 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 
 	BUG_ON(atlas_rq->timer_target == ATLAS_NONE);
 
+	atlas_debug(TIMER, "Timer target: %s",
+		    atlas_rq->timer_target == ATLAS_JOB
+				    ? "JOB"
+				    : atlas_rq->timer_target == ATLAS_SLACK
+						      ? "SLACK"
+						      : "BUG");
 	sched_log("Timer: %s", atlas_rq->timer_target == ATLAS_JOB ? "JOB" :
 						   atlas_rq->timer_target == ATLAS_SLACK ? "SLACK" : "BUG");
 	
@@ -790,7 +796,8 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 {
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se = &p->atlas;
-	
+
+	atlas_debug(ENQUEUE, "curr %p, se: %p", atlas_rq->curr, se);
 	if (atlas_rq->curr != se) {
 		enqueue_entity(atlas_rq, se);
 	}
@@ -928,6 +935,9 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		return NULL;
 	}
 
+	atlas_debug(PICK_NEXT_TASK, "SE: %p", atlas_rq->curr);
+	atlas_debug(PICK_NEXT_TASK, "rb_leftmost_se: %p",
+		    atlas_rq->rb_leftmost_se);
 	se = pick_first_entity(atlas_rq);
 
 	/*
@@ -936,6 +946,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	 * of the tree)
 	 */
 	if (unlikely(!se->job)) {
+		atlas_debug(PICK_NEXT_TASK, "Without Job. Signalhandling?");
 		atlas_rq->curr = se;
 		dequeue_entity(atlas_rq, se);
 		timer = 0;
@@ -986,6 +997,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		start_slack(atlas_rq, slack);
 		
 		if (likely(sysctl_sched_atlas_advance_in_cfs)) {
+			atlas_debug(PICK_NEXT_TASK, "advance in CFS");
 			atlas_rq->curr = se;
 			dequeue_entity(atlas_rq, se);
 			// skip setup of timer, it is used for slack
@@ -1133,7 +1145,7 @@ static void switched_from_atlas(struct rq *rq, struct task_struct *p)
 
 static void switched_to_atlas(struct rq *rq, struct task_struct *p)
 {
-    atlas_debug(SWITCHED_TO, "pid=%d", p->pid);
+    atlas_debug(SWITCHED_TO, "pid=%d on_rq=%d", p->pid, p->atlas.on_rq);
 	
 	if (!p->atlas.on_rq)
 		return;
@@ -1689,6 +1701,7 @@ SYSCALL_DEFINE0(atlas_next)
 	
 
 	for(;;) {
+		atlas_debug(SYS_NEXT, "Start waiting");
 		set_current_state(TASK_INTERRUPTIBLE);
 		
 		//we are aware of the lost update problem
@@ -1732,7 +1745,9 @@ out_timer:
 	 */
 	atlas_debug(SYS_NEXT, "pid=%d setup timer for real_job %p (job %p) (need_resched=%d).",
 		current->pid, se->real_job, se->job, test_tsk_need_resched(current));
-
+	atlas_debug(SYS_NEXT, "now: %lld, deadline %lld, difference: %lld",
+		    ktime_get().tv64, se->real_job->deadline.tv64,
+		    ktime_sub(se->real_job->deadline, ktime_get()).tv64);
 	hrtimer_start(&se->timer, se->real_job->deadline, HRTIMER_MODE_ABS_PINNED);
 	
 	sched_log("NEXT pid=%d job=%p", current->pid, current->atlas.job);
@@ -1761,9 +1776,9 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, struct timeval __user *,
 	struct atlas_rq *atlas_rq;
 	unsigned long flags;
 
-	//atlas_debug(SYS_SUBMIT, "pid=%u, exectime=0x%p, deadline=0x%p",
-	//	pid, exectime, deadline);
-			
+	atlas_debug(SYS_SUBMIT, "pid=%u, exectime=0x%p, deadline=0x%p", pid,
+		    exectime, deadline);
+
 	if (!exectime || !deadline || pid < 0)
 		return -EINVAL;
 					
