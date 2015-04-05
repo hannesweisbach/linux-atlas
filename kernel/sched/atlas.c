@@ -1576,7 +1576,7 @@ const struct sched_class atlas_sched_class = {
 	.switched_to        = switched_to_atlas,
 
 	.get_rr_interval    = get_rr_interval_atlas,
-
+	.update_curr        = update_curr_atlas,
 };
 
 
