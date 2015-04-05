@@ -931,7 +931,15 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	/*
 	 * only proceed if there are runnable tasks
 	 */
-	if (likely(!atlas_rq->nr_runnable)) {
+	if (likely(!atlas_rq->nr_runnable))
+		return NULL;
+
+	/*
+	 * slack time?
+	 */
+	if (in_slacktime(atlas_rq)) {
+		atlas_debug(PICK_NEXT_TASK,
+			    "No ATLAS job, because slack is available");
 		return NULL;
 	}
 
@@ -953,12 +961,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		goto out;
 	}
 	
-	/*
-	 * slack time?
-	 */
-	if (in_slacktime(atlas_rq))
-		return NULL;
-
 	BUG_ON(atlas_rq->timer_target == ATLAS_SLACK);
 	BUG_ON(atlas_rq->timer_target == ATLAS_JOB);
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
