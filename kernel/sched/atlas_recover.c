@@ -372,8 +372,6 @@ pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
         struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
 	struct sched_atlas_entity *se;
 
-	BUG_ON(atlas_recover_rq->curr);
-
 
 	/*
 	 * only proceed if there are runnable tasks
@@ -382,7 +380,11 @@ pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 		//if there is no ready task, no need to set up timer
 		return NULL;
 	}
-		
+
+	put_prev_task(rq, prev);
+
+	BUG_ON(atlas_recover_rq->curr);
+
 	se = pick_first_entity_recover(atlas_recover_rq);
 
 	atlas_recover_rq->curr = se;
