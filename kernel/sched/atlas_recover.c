@@ -476,5 +476,5 @@ const struct sched_class atlas_recover_sched_class = {
 	.switched_to        = switched_to_atlas_recover,
 
 	.get_rr_interval    = get_rr_interval_atlas_recover,
-
+	.update_curr        = update_curr_atlas_recover,
 };
