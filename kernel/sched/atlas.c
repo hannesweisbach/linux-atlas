@@ -347,6 +347,7 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 			atlas_rq->pending_work |= PENDING_JOB_TIMER;
 			break;
 		case ATLAS_SLACK:
+			add_nr_running(rq, 1);
 			atlas_rq->pending_work |= PENDING_STOP_CFS_ADVANCED;
 			break;
 		default:
@@ -1024,6 +1025,11 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 			// skip setup of timer, it is used for slack
 			timer = 0;
 			atlas_rq->pending_work |= PENDING_START_CFS_ADVANCED;
+		} else {
+			/* reduce nr_runnable, since we are in slack and will
+			 * not run, when pick_next_task is called
+			 */
+			sub_nr_running(rq, 1);
 		}
 
 		goto unlock_out;
