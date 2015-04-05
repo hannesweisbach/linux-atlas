@@ -17,6 +17,7 @@ enum debug {
 	SWITCH_SCHED,
 	ADAPT_SEXEC,
 	SLACK_TIME,
+	PENDING_WORK,
 	NUM_FLAGS
 };
 

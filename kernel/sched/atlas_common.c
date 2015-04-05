@@ -95,6 +95,8 @@ static const char *flag2string(enum debug flag)
 		return "adapt_sexec";
 	case SLACK_TIME:
 		return "slack_time";
+	case PENDING_WORK:
+		return "pending_work";
 	default:
 		BUG();
 	}
