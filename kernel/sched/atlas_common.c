@@ -97,6 +97,8 @@ static const char *flag2string(enum debug flag)
 		return "slack_time";
 	case PENDING_WORK:
 		return "pending_work";
+	case PARTITION:
+		return "partition";
 	default:
 		BUG();
 	}
