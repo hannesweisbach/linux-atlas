@@ -18,6 +18,7 @@ enum debug {
 	ADAPT_SEXEC,
 	SLACK_TIME,
 	PENDING_WORK,
+	PARTITION,
 	NUM_FLAGS
 };
 
