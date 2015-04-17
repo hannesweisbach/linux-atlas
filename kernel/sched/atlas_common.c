@@ -79,6 +79,8 @@ static const char *flag2string(enum debug flag)
 		return "set_curr_task";
 	case SWITCHED_TO:
 		return "switched_to";
+	case SWITCHED_FROM:
+		return "switched_from";
 	case PUT_PREV_TASK:
 		return "put_prev_task";
 	case CHECK_PREEMPT:
