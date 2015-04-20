@@ -2124,11 +2124,19 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	INIT_LIST_HEAD(&p->rt.run_list);
 
 #ifdef CONFIG_ATLAS
-	INIT_LIST_HEAD(&p->atlas.jobs);
+	RB_CLEAR_NODE(&p->atlas.run_node);
+	INIT_LIST_HEAD(&p->atlas.list);
+	p->atlas.state = ATLAS_UNDEF;
+	p->atlas.flags = 0;
 	p->atlas.on_rq = 0;
+	p->atlas.on_recover_rq = 0;
+	p->atlas.start = ktime_set(0, 0);
+	p->atlas.job = NULL;
+	p->atlas.real_job = NULL;
+	INIT_LIST_HEAD(&p->atlas.jobs);
+	spin_lock_init(&p->atlas.jobs_lock);
 	hrtimer_init(&p->atlas.timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_PINNED);
 	p->atlas.timer.function = &atlas_timer_task_function;
-	spin_lock_init(&p->atlas.jobs_lock);
 #endif
 
 #ifdef CONFIG_PREEMPT_NOTIFIERS
