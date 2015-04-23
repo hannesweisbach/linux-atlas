@@ -89,6 +89,9 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/sched.h>
+#ifdef CONFIG_ATLAS_TRACE
+#include <trace/events/atlas.h>
+#endif
 
 void start_bandwidth_timer(struct hrtimer *period_timer, ktime_t period)
 {
@@ -787,6 +790,9 @@ static void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 	update_rq_clock(rq);
 	sched_info_queued(rq, p);
 	p->sched_class->enqueue_task(rq, p, flags);
+#ifdef CONFIG_ATLAS_TRACE
+	trace_atlas_enqueue_task(p, rq);
+#endif
 }
 
 static void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
@@ -794,6 +800,9 @@ static void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 	update_rq_clock(rq);
 	sched_info_dequeued(rq, p);
 	p->sched_class->dequeue_task(rq, p, flags);
+#ifdef CONFIG_ATLAS_TRACE
+	trace_atlas_dequeue_task(p, rq);
+#endif
 }
 
 void activate_task(struct rq *rq, struct task_struct *p, int flags)
@@ -2678,6 +2687,9 @@ pick_next_task(struct rq *rq, struct task_struct *prev)
 		if (unlikely(!p))
 			p = idle_sched_class.pick_next_task(rq, prev);
 
+#ifdef CONFIG_ATLAS_TRACE
+		trace_atlas_pick_next_task(rq, p);
+#endif
 		return p;
 	}
 
@@ -2687,6 +2699,9 @@ again:
 		if (p) {
 			if (unlikely(p == RETRY_TASK))
 				goto again;
+#ifdef CONFIG_ATLAS_TRACE
+			trace_atlas_pick_next_task(rq, p);
+#endif
 			return p;
 		}
 	}
@@ -2763,6 +2778,9 @@ static void __sched __schedule(void)
 
 	rq->clock_skip_update <<= 1; /* promote REQ to ACT */
 
+#ifdef CONFIG_ATLAS_TRACE
+	trace_atlas_enter(rq);
+#endif
 	switch_count = &prev->nivcsw;
 	if (prev->state && !(preempt_count() & PREEMPT_ACTIVE)) {
 		if (unlikely(signal_pending_state(prev->state, prev))) {
