@@ -9,6 +9,10 @@
 #include "atlas.h"
 #include "atlas_common.h"
 
+#ifdef CONFIG_ATLAS_TRACE
+#include <trace/events/atlas.h>
+#endif
+
 const struct sched_class atlas_sched_class;
 
 unsigned int sysctl_sched_atlas_min_slack      = 1000000ULL;
@@ -41,7 +45,9 @@ void sched_log(const char *fmt, ...)
 	vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
 
-	//trace_sched_log(&buf[0]);
+#if CONFIG_ATLAS_TRACE
+	trace_atlas_log(&buf[0]);
+#endif
 }
 
 
