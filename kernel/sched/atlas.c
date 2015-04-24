@@ -1808,9 +1808,9 @@ out:
 #define ATLAS_TIME_ABS 0
 #define ATLAS_TIME_REL 1
 
-SYSCALL_DEFINE4(atlas_submit, pid_t, pid, struct timeval __user *,
-					exectime, struct timeval __user *, deadline, int, time_base)
-					
+SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
+		exectime, struct timeval __user *, deadline, int, time_base)
+
 {
 	struct timeval lexectime;
 	struct timeval ldeadline;
