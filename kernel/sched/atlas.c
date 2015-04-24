@@ -51,10 +51,25 @@ void sched_log(const char *fmt, ...)
 #endif
 }
 
+static inline struct atlas_job *job_alloc(struct pid *pid, uint64_t id,
+					  ktime_t deadline, ktime_t exectime)
+{
+	struct atlas_job *job = kzalloc(sizeof(struct atlas_job), GFP_KERNEL);
+	if (!job) {
+		goto out;
+	}
 
-static inline void init_job(struct atlas_job *job) {
-	memset(job, 0, sizeof(struct atlas_job));
+	INIT_LIST_HEAD(&job->list);
+	RB_CLEAR_NODE(&job->rb_node);
+	job->pid = pid;
+	job->deadline = job->sdeadline = deadline;
+	job->exectime = job->sexectime = exectime;
+	job->id = id;
+
 	atomic_set(&job->count, 1);
+
+out:
+	return job;
 }
 
 static inline struct atlas_job *get_job
@@ -1814,29 +1829,27 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 {
 	struct timeval lexectime;
 	struct timeval ldeadline;
-	struct atlas_job *job;
+	struct atlas_job *job = NULL;
 	struct task_struct *t;
 	int ret = 0;
+	struct pid *pidp;
 	ktime_t kdeadline;
 	struct atlas_rq *atlas_rq;
 	unsigned long flags;
 
-	atlas_debug(SYS_SUBMIT, "pid=%u, exectime=0x%p, deadline=0x%p", pid,
-		    exectime, deadline);
 
-	if (!exectime || !deadline || pid < 0)
+	if (!exectime || !deadline || pid < 0) {
+		atlas_debug(SYS_SUBMIT, "One is not valid: pid=%u, "
+					"exectime=0x%p, deadline=0x%p",
+			    pid, exectime, deadline);
 		return -EINVAL;
+	}
 					
 	if (copy_from_user(&lexectime, exectime, sizeof(struct timeval)) ||
 		copy_from_user(&ldeadline, deadline, sizeof(struct timeval))) {
 		atlas_debug(SYS_SUBMIT, "bad address");
 		return -EFAULT;
 	}
-	atlas_debug(SYS_SUBMIT, "pid=%u, exectime=%lld, deadline=%lld, time_base=%s",
-		pid,
-		ktime_to_ms(timeval_to_ktime(lexectime)),
-		ktime_to_ms(timeval_to_ktime(ldeadline)),
-		time_base == 0 ? "ABS" : ( time_base == 1 ? "REL" : "INVALID"));
 
 	/*
 	 * calculate deadline with respect to CLOCK_MONOTONIC
@@ -1846,41 +1859,33 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 		kdeadline = ktime_add(ktime_get(), kdeadline);
 
 	/*
-	 * allocate memory for the new job
-	 */
-	job = kmalloc(sizeof(struct atlas_job), GFP_KERNEL);
-	atlas_debug(SYS_SUBMIT, "job=%p", job);
-	if (job == NULL) {
-		return -ENOMEM;
-	}
-
-	rcu_read_lock();
-
-	/*
 	 * check for thread existence
 	 */
-	job->pid = find_get_pid(pid);
+	pidp = find_get_pid(pid);
 	
-	if (!job->pid) {
-		kfree(job);
+	if (!pidp) {
+		atlas_debug(SYS_SUBMIT, "No process with PID %d found.", pid);
 		ret = -ESRCH;
 		goto out;
 	}
-	
-	t = pid_task(job->pid, PIDTYPE_PID);
+
+	t = pid_task(pidp, PIDTYPE_PID);
 	BUG_ON(!t);
 	atlas_rq = &task_rq(t)->atlas;
 
-	init_job(job);
-	
-	job->deadline = kdeadline; 
-	job->exectime = timeval_to_ktime(lexectime);
-	
-	job->sdeadline = job->deadline;
-	job->sexectime = job->exectime;
+	job = job_alloc(pidp, id, kdeadline, timeval_to_ktime(lexectime));
+	if (!job) {
+		atlas_debug(SYS_SUBMIT, "Could not allocate job structure.");
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	atlas_debug(SYS_SUBMIT,
+		    "Job %lld (e: %lld, d: %lld) for Task '%s' (%d)", job->id,
+		    ktime_to_ms(job->exectime), ktime_to_ms(job->deadline),
+		    t->comm, pid);
 
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-	//now = atlas_rq->exec_timer.base->get_time();
 	assign_rq_job(atlas_rq, job);
 
 	if (ktime_cmp(job->exectime, job->sexectime) == 0)
@@ -1892,12 +1897,9 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 
-	//rcu_read_lock prevents the job from going away
 	assign_task_job(t, job);
 	
 out:
-	atlas_debug(SYS_SUBMIT, "ready: job=%p", job);
-	rcu_read_unlock();
 	put_job(job);
 	return ret;
 }
