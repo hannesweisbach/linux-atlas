@@ -34,6 +34,7 @@ enum update_exec_time {
 	NO_UPDATE_EXEC_TIME,
 };
 
+static void assign_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job);
 
 void sched_log(const char *fmt, ...)
 {
@@ -922,7 +923,7 @@ preempt:
 }
 
 static int get_slacktime(struct atlas_rq *atlas_rq, ktime_t *slack);
-static void cleanup_rq(struct atlas_rq *atlas_rq, ktime_t ktime);
+static void cleanup_rq(struct atlas_rq *atlas_rq);
 static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev);
 
 static struct task_struct *pick_next_task_atlas(struct rq *rq,
@@ -930,7 +931,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 {
         struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se;
-	ktime_t slack, now;
+	ktime_t slack;
 	struct atlas_job *job, *job_next;
 	struct task_struct *p;
 	unsigned long flags;
@@ -994,12 +995,10 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 	
-	now = ktime_get();
-
 	/*
 	 * remove jobs having a deadline in the past
 	 */
-	cleanup_rq(atlas_rq, now);
+	cleanup_rq(atlas_rq);
 		
 	/*
 	 * job of se might be removed by cleanup
@@ -1340,7 +1339,7 @@ static inline ktime_t calc_gap(struct atlas_job *a, struct atlas_job *b) {
  * must be called with atlas_rq locked
  */
 static void assign_rq_job(struct atlas_rq *atlas_rq,
-		struct atlas_job *job, ktime_t now) {
+		struct atlas_job *job) {
 	
 	struct rb_node **link;
 	struct rb_node *parent = NULL;
@@ -1348,7 +1347,7 @@ static void assign_rq_job(struct atlas_rq *atlas_rq,
 	
 	assert_raw_spin_locked(&atlas_rq->lock);
 	
-	cleanup_rq(atlas_rq, now);
+	cleanup_rq(atlas_rq);
 
 	/*
 	 * needed to decide whether to reset slack
@@ -1533,9 +1532,11 @@ static int get_slacktime(struct atlas_rq *atlas_rq, ktime_t *slack) {
 		return 0;
 }
 
-static void cleanup_rq(struct atlas_rq *atlas_rq, ktime_t now) {
+static void cleanup_rq(struct atlas_rq *atlas_rq) {
+	ktime_t now = ktime_get();
 	struct atlas_job *tmp, *s = pick_first_job(atlas_rq);
 
+	atlas_debug(RBTREE, "cleanup_rq");
 	assert_raw_spin_locked(&atlas_rq->lock);
 	while (s && unlikely(job_missed_deadline(s, now))) {
 		/*struct task_struct *p = task_of_job(s);
@@ -1816,7 +1817,7 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, struct timeval __user *,
 	struct atlas_job *job;
 	struct task_struct *t;
 	int ret = 0;
-	ktime_t now, kdeadline;
+	ktime_t kdeadline;
 	struct atlas_rq *atlas_rq;
 	unsigned long flags;
 
@@ -1880,9 +1881,7 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, struct timeval __user *,
 
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 	//now = atlas_rq->exec_timer.base->get_time();
-	now = ktime_get();
-	
-	assign_rq_job(atlas_rq, job, ktime_get());
+	assign_rq_job(atlas_rq, job);
 
 	if (ktime_cmp(job->exectime, job->sexectime) == 0)
 		atlas_debug(SYS_SUBMIT, "sexectime == exectime");
