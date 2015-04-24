@@ -38,17 +38,23 @@ static void assign_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job);
 
 void sched_log(const char *fmt, ...)
 {
-	char buf[50];
-
 	va_list args;
+#if CONFIG_ATLAS_TRACE
+	char buf[50];
 
 	va_start(args, fmt);
 	vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
 
-#if CONFIG_ATLAS_TRACE
 	trace_atlas_log(&buf[0]);
 #endif
+	preempt_disable();
+
+	va_start(args, fmt);
+	vprintk_emit(0, LOGLEVEL_SCHED, NULL, 0, fmt, args);
+	va_end(args);
+
+	preempt_enable();
 }
 
 static inline struct atlas_job *job_alloc(struct pid *pid, uint64_t id,
