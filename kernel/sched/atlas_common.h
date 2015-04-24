@@ -20,6 +20,7 @@ enum debug {
 	SLACK_TIME,
 	PENDING_WORK,
 	PARTITION,
+	RUNQUEUE,
 	NUM_FLAGS
 };
 

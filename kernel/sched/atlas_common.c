@@ -101,6 +101,8 @@ static const char *flag2string(enum debug flag)
 		return "pending_work";
 	case PARTITION:
 		return "partition";
+	case RUNQUEUE:
+		return "runqueue";
 	default:
 		BUG();
 	}
