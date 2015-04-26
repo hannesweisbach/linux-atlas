@@ -591,15 +591,17 @@ static void assign_task_job(struct task_struct *p, struct atlas_job *job)
 	
 	BUG_ON(!p);
 
+#if !MIGRATE_ON
 	{
-		//ensure that p is mapped to cpu 0
+		// ensure that p is mapped to cpu 0
 		cpumask_t test;
 		cpumask_clear(&test);
 		cpumask_set_cpu(0, &test);
 
 		BUG_ON(!cpumask_equal(&test, &p->cpus_allowed));
 	}
-	
+#endif
+
 	se = &p->atlas;
 
 	spin_lock(&se->jobs_lock);
