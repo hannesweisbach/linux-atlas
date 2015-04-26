@@ -1,6 +1,8 @@
 #ifndef _SCHED_ATLAS_COMMON_H
 #define _SCHED_ATLAS_COMMON_H
 
+#include <linux/printk.h>
+
 enum debug {
 	SYS_NEXT = 0,
 	SYS_SUBMIT,
@@ -96,6 +98,14 @@ void erase_rq_job(struct atlas_rq *, struct atlas_job *);
 			(job) ? ktime_to_ms((job)->sexectime) : -1,            \
 			(job) ? ktime_to_ms((job)->deadline) : -1,             \
 			(job) ? ktime_to_ms((job)->sdeadline) : -1
+
+#define atlas_debug_(flag, fmt, ...)                                           \
+	do {                                                                   \
+		if (is_flag_enabled(flag)) {                                   \
+			pr_debug("CPU %d [" #flag "](%d): " fmt "\n",          \
+				 smp_processor_id(), __LINE__, ##__VA_ARGS__); \
+		}                                                              \
+	} while (0)
 
 #define atlas_debug(flag, fmt, ...)                                            \
 	do {                                                                   \
