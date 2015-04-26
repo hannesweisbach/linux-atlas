@@ -1837,12 +1837,10 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 	struct timeval ldeadline;
 	struct atlas_job *job = NULL;
 	struct task_struct *t;
-	int ret = 0;
 	struct pid *pidp;
 	ktime_t kdeadline;
 	struct atlas_rq *atlas_rq;
 	unsigned long flags;
-
 
 	if (!exectime || !deadline || pid < 0) {
 		atlas_debug(SYS_SUBMIT, "One is not valid: pid=%u, "
@@ -1850,9 +1848,9 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 			    pid, exectime, deadline);
 		return -EINVAL;
 	}
-					
+
 	if (copy_from_user(&lexectime, exectime, sizeof(struct timeval)) ||
-		copy_from_user(&ldeadline, deadline, sizeof(struct timeval))) {
+	    copy_from_user(&ldeadline, deadline, sizeof(struct timeval))) {
 		atlas_debug(SYS_SUBMIT, "bad address");
 		return -EFAULT;
 	}
@@ -1868,44 +1866,34 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 	 * check for thread existence
 	 */
 	pidp = find_get_pid(pid);
-	
+
 	if (!pidp) {
 		atlas_debug(SYS_SUBMIT, "No process with PID %d found.", pid);
-		ret = -ESRCH;
-		goto out;
+		return -ESRCH;
 	}
-
-	t = pid_task(pidp, PIDTYPE_PID);
-	BUG_ON(!t);
-	atlas_rq = &task_rq(t)->atlas;
 
 	job = job_alloc(pidp, id, kdeadline, timeval_to_ktime(lexectime));
 	if (!job) {
 		atlas_debug(SYS_SUBMIT, "Could not allocate job structure.");
-		ret = -ENOMEM;
-		goto out;
+		return -ENOMEM;
 	}
 
-	atlas_debug(SYS_SUBMIT,
-		    "Job %lld (e: %lld, d: %lld) for Task '%s' (%d)", job->id,
-		    ktime_to_ms(job->exectime), ktime_to_ms(job->deadline),
-		    t->comm, pid);
+	rcu_read_lock();
+	t = pid_task(pidp, PIDTYPE_PID);
+	BUG_ON(!t);
+	assign_task_job(t, job);
 
+	atlas_rq = &task_rq(t)->atlas;
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-	assign_rq_job(atlas_rq, job);
 
-	if (ktime_cmp(job->exectime, job->sexectime) == 0)
-		atlas_debug(SYS_SUBMIT, "sexectime == exectime");
-	else if (ktime_zero(job->sexectime))
-		atlas_debug(SYS_SUBMIT, "sexectime == 0");
-	else
-		atlas_debug(SYS_SUBMIT, "sexectime < exectime");
+	assign_rq_job(atlas_rq, job);
 
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 
-	assign_task_job(t, job);
-	
-out:
-	put_job(job);
-	return ret;
+	rcu_read_unlock();
+
+	atlas_debug_(SYS_SUBMIT, JOB_FMT " for Task '%s' (%d)", JOB_ARG(job),
+		     t->comm, pid);
+
+	return 0;
 }
