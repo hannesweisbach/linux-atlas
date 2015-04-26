@@ -759,13 +759,13 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
  * We pick a new current task - update its stats:
  */
 static inline void
-update_stats_curr_start(struct atlas_rq *atlas_rq, struct sched_atlas_entity *se, ktime_t now)
+update_stats_curr_start(struct atlas_rq *atlas_rq, struct sched_atlas_entity *se)
 {
 	/*
 	 * starting new timer period
 	 */
 	task_of(se)->se.exec_start = rq_of(atlas_rq)->clock_task;
-	se->start = now;
+	se->start = ktime_get();
 }
 
 
@@ -778,7 +778,7 @@ static void update_curr_atlas(struct rq *rq)
 	u64 delta_exec;
 	struct atlas_job *job = se->job;
 	unsigned long flags;
-	ktime_t diff_ktime, now;
+	ktime_t prev_start;
 
 	if (curr->sched_class != &atlas_sched_class) {
 		sched_log("update_curr: wrong scheduling class!");
@@ -796,9 +796,9 @@ static void update_curr_atlas(struct rq *rq)
 	curr->se.sum_exec_runtime += delta_exec;
 	account_group_exec_runtime(curr, delta_exec);
 
-	now = ktime_get();
-	diff_ktime = ktime_sub(now, se->start);
-	update_stats_curr_start(atlas_rq, se, now);
+	prev_start = se->start;
+	update_stats_curr_start(atlas_rq, se);
+	diff_ktime = ktime_sub(se->start, prev_start);
 	cpuacct_charge(curr, delta_exec);
 	
 	
@@ -1122,7 +1122,7 @@ out:
 		atlas_debug(PICK_NEXT_TASK, "pid=%d, need_resched=%d",
 			    task_of(atlas_rq->curr)->pid,
 			    test_tsk_need_resched(task_of(atlas_rq->curr)));
-		update_stats_curr_start(atlas_rq, atlas_rq->curr, ktime_get());
+		update_stats_curr_start(atlas_rq, atlas_rq->curr);
 
 		if (timer)
 			start_job(atlas_rq, atlas_rq->curr->job);
@@ -1181,8 +1181,8 @@ static void set_curr_task_atlas(struct rq *rq)
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	
 	atlas_debug(SET_CURR_TASK, "pid=%d", p->pid);
-    update_stats_curr_start(atlas_rq, se, ktime_get());
-    
+	update_stats_curr_start(atlas_rq, se);
+
     BUG_ON(rq->atlas.curr);
 	rq->atlas.curr = se;
 	
