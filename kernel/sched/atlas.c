@@ -559,25 +559,6 @@ static void debug_task(struct task_struct *p) {
 /*
  * must be called with lock hold
  */
-static void push_task_job(struct sched_atlas_entity *se,
-		struct atlas_job *new_job)
-{
-	struct list_head *entry;
-	struct atlas_job *job;
-
-	assert_spin_locked(&se->jobs_lock);
-
-	//typically, a new job should go to the end
-	list_for_each_prev(entry, &se->jobs) {
-		job = list_entry(entry, struct atlas_job, list);
-		if (job_before(job, new_job))
-			goto out;
-	}
-out:
-	list_add(&new_job->list, entry);
-	get_job(new_job);
-}
-
 /*
  * caller is responsible for calling put_job(job) when done
  */
@@ -622,7 +603,21 @@ static void assign_task_job(struct task_struct *p, struct atlas_job *job)
 
 	spin_lock(&se->jobs_lock);
 	wakeup = list_empty(&se->jobs) && (se->state == ATLAS_BLOCKED);
-	push_task_job(se, job);
+
+	{
+		struct list_head *entry;
+
+		// typically, a new job should go to the end
+		list_for_each_prev(entry, &se->jobs)
+		{
+			struct atlas_job *curr = list_entry(
+					entry, struct atlas_job, list);
+			if (job_before(curr, job))
+				break;
+		}
+		list_add(&job->list, entry);
+	}
+
 	spin_unlock(&se->jobs_lock);
 	
 	/*
