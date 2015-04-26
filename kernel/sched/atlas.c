@@ -18,6 +18,7 @@ const struct sched_class atlas_sched_class;
 unsigned int sysctl_sched_atlas_min_slack      = 1000000ULL;
 unsigned int sysctl_sched_atlas_advance_in_cfs = 0;
 
+#define MIGRATE_ON 0
 
 #define TIMER_EXPIRED                0x01
 
