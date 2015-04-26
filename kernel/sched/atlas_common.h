@@ -90,6 +90,13 @@ int update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
 			  ktime_t delta_exec);
 void erase_rq_job(struct atlas_rq *, struct atlas_job *);
 
+#define JOB_FMT "Job %lld (e: %lld/%lld, d: %lld/%lld)"
+#define JOB_ARG(job)                                                           \
+	(job) ? (job)->id : 0, (job) ? ktime_to_ms((job)->exectime) : -1,      \
+			(job) ? ktime_to_ms((job)->sexectime) : -1,            \
+			(job) ? ktime_to_ms((job)->deadline) : -1,             \
+			(job) ? ktime_to_ms((job)->sdeadline) : -1
+
 #define atlas_debug(flag, fmt, ...)                                            \
 	do {                                                                   \
 		if (is_flag_enabled(flag)) {                                   \
