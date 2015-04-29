@@ -654,6 +654,11 @@ void atlas_do_pending_work(struct rq *rq) {
 	struct task_struct *prev = rq->curr;
 
 	atlas_debug(PENDING_WORK, "%ld\n", atlas_rq->pending_work);
+	BUG_ON((rq->atlas.pending_work & PENDING_STOP_CFS_ADVANCED) &&
+	       (rq->atlas.pending_work & PENDING_START_CFS_ADVANCED) &&
+	       rq->atlas.advance_in_cfs);
+	BUG_ON((rq->atlas.pending_work & PENDING_STOP_CFS_ADVANCED) &&
+	       rq->atlas.advance_in_cfs);
 
 	update_rq_clock(rq);
 

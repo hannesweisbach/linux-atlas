@@ -3214,9 +3214,6 @@ static void __sched notrace __schedule(bool preempt)
 		switch_count = &prev->nvcsw;
 	}
 #ifdef CONFIG_ATLAS
-	BUG_ON((rq->atlas.pending_work & 0x3) == 3 && rq->atlas.advance_in_cfs);
-	BUG_ON(rq->atlas.pending_work & 0x2 && rq->atlas.advance_in_cfs);
-
 	if (unlikely(rq->atlas.pending_work))
 		atlas_do_pending_work(rq);
 
