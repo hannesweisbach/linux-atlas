@@ -2,6 +2,7 @@
 #define _SCHED_ATLAS_COMMON_H
 
 #include <linux/printk.h>
+#include <linux/ktime.h>
 
 enum debug {
 	SYS_NEXT = 0,
@@ -49,6 +50,18 @@ static inline struct atlas_job *pick_next_job(const struct atlas_job const *job)
 	return rb_entry(next, struct atlas_job, rb_node);
 }
 
+static inline ktime_t job_start(const struct atlas_job const *s)
+{
+	return ktime_sub(s->sdeadline, s->sexectime);
+}
+
+static inline int job_before(struct atlas_job *lhs, struct atlas_job *rhs)
+{
+	BUG_ON(!lhs);
+	BUG_ON(!rhs);
+	return ktime_to_ns(lhs->deadline) < ktime_to_ns(rhs->deadline);
+}
+
 static inline struct sched_atlas_entity *
 pick_first_entity(const struct atlas_rq const *atlas_rq)
 {
@@ -71,9 +84,32 @@ pick_next_entity(const struct sched_atlas_entity const *se)
 	return rb_entry(next, struct sched_atlas_entity, run_node);
 }
 
-static inline ktime_t job_start(const struct atlas_job const *s)
+static int entity_before(struct sched_atlas_entity *a,
+			 struct sched_atlas_entity *b)
 {
-	return ktime_sub(s->sdeadline, s->sexectime);
+
+	/*
+	 * a preemption within sys_next or a wakeup due to a signal can lead
+	 * into cases where se->job is null.
+	 * Because we also queue this se's into the tree, we have to check
+	 * both.
+	 *
+	 * 4 cases:
+	 * new | comparator
+	 * ----------------
+	 *  o  |  o  doesn't matter
+	 *  o  |  x  new should go to the beginning
+	 *  x  |  o  the old entry should stay on the left side
+	 *  x  |  x  compare
+	 */
+
+	if (unlikely(!a->job)) // left side if new has no submisson
+		return 1;
+
+	if (unlikely(!b->job)) // right side
+		return 0;
+
+	return job_before(a->job, b->job);
 }
 
 static inline int ktime_zero(const ktime_t a)
