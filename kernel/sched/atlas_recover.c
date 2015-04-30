@@ -76,21 +76,6 @@ void init_atlas_recover_rq(struct atlas_recover_rq *atlas_recover_rq)
 	atlas_recover_rq->pending_work = 0;
 }
 
-static inline int job_before(struct atlas_job *a,
-		struct atlas_job *b)
-{
-	BUG_ON(!a);
-	BUG_ON(!b);
-	return ktime_to_ns(a->deadline) <  ktime_to_ns(b->deadline);
-}
-
-static inline int entity_before(struct sched_atlas_entity *a,
-		struct sched_atlas_entity *b)
-{
-	return job_before(a->job, b->job);
-}
-
-
 static void enqueue_entity(struct atlas_recover_rq *atlas_recover_rq,
 		struct sched_atlas_entity *se)
 {

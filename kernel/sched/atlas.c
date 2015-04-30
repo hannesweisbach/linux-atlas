@@ -100,42 +100,6 @@ static void put_job(struct atlas_job *job)
 	}
 }
 
-static inline int job_before(struct atlas_job *a,
-		struct atlas_job *b)
-{
-	BUG_ON(!a);
-	BUG_ON(!b);
-	return ktime_to_ns(a->deadline) <  ktime_to_ns(b->deadline);
-}
-
-static int entity_before(struct sched_atlas_entity *a,
-		struct sched_atlas_entity *b)
-{
-	
-	/*
-	 * a preemption within sys_next or a wakeup due to a signal can lead
-	 * into cases where se->job is null.
-	 * Because we also queue this se's into the tree, we have to check
-	 * both.
-	 * 
-	 * 4 cases:
-	 * new | comparator
-	 * ----------------
-	 *  o  |  o  doesn't matter
-	 *  o  |  x  new should go to the beginning
-	 *  x  |  o  the old entry should stay on the left side
-	 *  x  |  x  compare
-	 */
-	 
-	if (unlikely(!a->job)) //left side if new has no submisson
-		return 1;
-	
-	if (unlikely(!b->job)) //right side
-		return 0;
-		
-	return job_before(a->job, b->job);
-}
-
 static void enqueue_entity(struct atlas_rq *atlas_rq,
 		struct sched_atlas_entity *se)
 {
