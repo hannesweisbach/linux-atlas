@@ -3480,7 +3480,8 @@ recheck:
 		if (policy != SCHED_DEADLINE &&
 				policy != SCHED_FIFO && policy != SCHED_RR &&
 				policy != SCHED_NORMAL && policy != SCHED_BATCH &&
-				policy != SCHED_IDLE && policy != SCHED_ATLAS)
+				policy != SCHED_IDLE && policy != SCHED_ATLAS &&
+				policy != SCHED_ATLAS_RECOVER)
 #endif
 			return -EINVAL;
 	}
