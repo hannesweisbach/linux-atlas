@@ -3877,7 +3877,8 @@ recheck:
 #ifndef CONFIG_ATLAS
 		if (!valid_policy(policy))
 #else
-		if (!valid_policy(policy) && policy != SCHED_ATLAS)
+		if (!valid_policy(policy) &&
+                    policy != SCHED_ATLAS && policy != SCHED_ATLAS_RECOVER)
 #endif
 			return -EINVAL;
 	}
