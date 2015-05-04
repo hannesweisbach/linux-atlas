@@ -2231,6 +2231,16 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	 */
 	p->prio = current->normal_prio;
 
+#if CONFIG_ATLAS
+	if (unlikely(p->policy == SCHED_ATLAS ||
+		     p->policy == SCHED_ATLAS_RECOVER)) {
+		WARN_ONCE(1, "Forking ATLAS tasks requires "
+			     "SCHED_FLAG_RESET_ON_FORK to be set. Setting "
+			     "now.");
+		p->sched_reset_on_fork = 1;
+	}
+#endif
+
 	/*
 	 * Revert to default priority/policy on fork if requested.
 	 */
