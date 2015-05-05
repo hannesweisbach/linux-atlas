@@ -366,66 +366,99 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
  * switching between the schedulers
  */
 
-static const char * sched_name(const struct sched_class *c) {
-	if (c == &rt_sched_class)
-		return "REALTIME";
-	if (c == &atlas_sched_class)
-		return "ATLAS";
-	if (c == &atlas_recover_sched_class)
-		return "ATLAS_RECOVER";
-	if (c == &fair_sched_class)
+static const char *sched_name(int policy)
+{
+	switch (policy) {
+	case SCHED_BATCH:
+	case SCHED_NORMAL:
 		return "CFS";
-	if (c == &idle_sched_class)
+	case SCHED_FIFO:
+	case SCHED_RR:
+		return "REALTIME";
+	case SCHED_IDLE:
 		return "IDLE";
-	return "UNKNOWN";
+	case SCHED_DEADLINE:
+		return "DEADLINE";
+	case SCHED_ATLAS:
+		return "ATLAS";
+	case SCHED_ATLAS_RECOVER:
+		return "ATLAS Recover";
+	default:
+		return "UNKNOWN";
+	}
 }
 
 /*
- * scheduler switching stuff
+ * This is essentially the 'core' of __sched_setscheduler. I can't use
+ * __sched_setscheduler directly because it takes rq->lock, where I would need
+ * to call it in a context where rq->lock is already held. Thus the code
+ * duplication :/
  */
 
-void atlas_switch_scheduler(struct rq *rq,
-	struct task_struct *p, const struct sched_class *new_sched_class)
+void atlas_set_scheduler(struct rq *rq, struct task_struct *p, int policy)
 {
-	const struct sched_class *prev_sched_class;
-	int on_rq, running;
+	const struct sched_class *new_class, *prev_class;
+	int queued, running;
+
+	if (p->policy == policy) {
+		WARN(1, "Task '%s' (%d') already scheduled under policy %s",
+		     p->comm, task_pid_vnr(p), sched_name(policy));
+		return;
+	}
 
 	BUG_ON(in_interrupt());
 	assert_raw_spin_locked(&rq->lock);
 
-	//raw_spin_lock(&p->pi_lock);
-	
-	prev_sched_class = p->sched_class;
-
-	if (new_sched_class == prev_sched_class) {
-		//raw_spin_unlock(&p->pi_lock);
-		return;
+	switch (policy) {
+	case SCHED_ATLAS:
+		new_class = &atlas_sched_class;
+		break;
+	case SCHED_ATLAS_RECOVER:
+		new_class = &atlas_recover_sched_class;
+		break;
+	case SCHED_NORMAL:
+		new_class = &fair_sched_class;
+		break;
+	default:
+		BUG();
 	}
-	on_rq = p->on_rq;
-	running = rq->curr == p;
-	
+
+	queued = task_on_rq_queued(p);
+	running = task_current(rq, p);
+
 	atlas_debug(SWITCH_SCHED, "pid=%d from %s to %s, on_rq=%d, running=%d",
-		p->pid, sched_name(prev_sched_class), sched_name(new_sched_class), on_rq, running);
-	
-	if (on_rq)
-		prev_sched_class->dequeue_task(rq, p, 0);
-	if (running)
-		prev_sched_class->put_prev_task(rq, p);
+		    p->pid, sched_name(p->policy), sched_name(policy), queued,
+		    running);
 
-	p->sched_class = new_sched_class;
-	
-	if (running)
-		new_sched_class->set_curr_task(rq);
-	if (on_rq)
-		new_sched_class->enqueue_task(rq, p, 0);
+	if (queued) {
+		update_rq_clock(rq);
+		sched_info_queued(rq, p);
+		p->sched_class->dequeue_task(rq, p, 0);
+	}
+	if (running) {
+		put_prev_task(rq, p);
+	}
 
-	if (prev_sched_class->switched_from)
-		prev_sched_class->switched_from(rq, p);
-	new_sched_class->switched_to(rq, p);
-	
-	//FIXME: pi-stuff?
-	//raw_spin_unlock(&p->pi_lock);
-	//rt_mutex_adjust_pi(p);
+	prev_class = p->sched_class;
+	p->sched_class = new_class;
+	p->policy = policy;
+
+	if (running)
+		p->sched_class->set_curr_task(rq);
+	if (queued) {
+		/*
+		 * Enqueue to head, because prio stays the same (see
+		 * __sched_setscheduler in core.c)
+		 */
+		update_rq_clock(rq);
+		sched_info_queued(rq, p);
+		p->sched_class->enqueue_task(rq, p, ENQUEUE_HEAD);
+	}
+
+	if (prev_class->switched_from)
+		prev_class->switched_from(rq, p);
+	/* Possble rq->lock 'hole'.  */
+	p->sched_class->switched_to(rq, p);
 }
 
 static void advance_thread_in_cfs(struct atlas_rq *atlas_rq) {
@@ -461,7 +494,7 @@ static void advance_thread_in_cfs(struct atlas_rq *atlas_rq) {
 	p->atlas.flags |= ATLAS_CFS_ADVANCED;
 	
 	sched_log("advance: next thread p=%d", p->pid);
-	atlas_switch_scheduler(rq_of(atlas_rq), p, &fair_sched_class);
+	atlas_set_scheduler(rq_of(atlas_rq), p, SCHED_NORMAL);
 }
 
 void atlas_cfs_blocked(struct rq *rq, struct task_struct *p) {
@@ -475,7 +508,7 @@ void atlas_cfs_blocked(struct rq *rq, struct task_struct *p) {
 
 	/* switch the scheduling class back to atlas */
 	p->atlas.flags &= ~ATLAS_CFS_ADVANCED;
-	atlas_switch_scheduler(rq, p, &atlas_sched_class);
+	atlas_set_scheduler(rq, p, SCHED_ATLAS);
 	atlas_rq->advance_in_cfs = NULL;
 
 	/* move the next ready task to cfs */
@@ -613,81 +646,93 @@ void erase_task_job(struct atlas_job *s) {
  *
  * timer interrupt may have been already triggered
  */
-void atlas_do_pending_work(struct rq *rq) {
+static void atlas_do_pending_work(struct rq *rq, struct task_struct *prev)
+{
+	unsigned long flags;
+	unsigned long pending_work;
 	struct atlas_rq *atlas_rq = &rq->atlas;
-	struct task_struct *prev = rq->curr;
 
-	atlas_debug(PENDING_WORK, "%ld\n", atlas_rq->pending_work);
 	BUG_ON((rq->atlas.pending_work & PENDING_STOP_CFS_ADVANCED) &&
 	       (rq->atlas.pending_work & PENDING_START_CFS_ADVANCED) &&
 	       rq->atlas.advance_in_cfs);
 	BUG_ON((rq->atlas.pending_work & PENDING_STOP_CFS_ADVANCED) &&
 	       rq->atlas.advance_in_cfs);
 
-	update_rq_clock(rq);
+	//raw_spin_lock_irqsave(&rq->lock, flags);
+	//update_rq_clock(rq);
+	//resched_curr(rq);
+	//raw_spin_unlock_irqrestore(&rq->lock, flags);
 
-	if (atlas_rq->pending_work & PENDING_STOP_CFS_ADVANCED) {
+	//raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+	
+	//raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+
+	atlas_debug_(PENDING_WORK, "");
+
+	if (test_and_clear_bit(PENDING_STOP_CFS_ADVANCED,
+			       &atlas_rq->pending_work)) {
 		struct task_struct **p = &atlas_rq->advance_in_cfs;
-
+		atlas_debug_(PENDING_WORK, "Stop advancing in CFS");
 		if (*p) {
+			atlas_debug(PENDING_WORK,
+				    "Move task '%s' (%d) to ATLAS.", (*p)->comm,
+				    task_pid_vnr(*p));
 			(*p)->atlas.flags &= ~ATLAS_CFS_ADVANCED;
-			atlas_switch_scheduler(rq, *p, &atlas_sched_class);
+			atlas_set_scheduler(rq, *p, SCHED_ATLAS);
 			*p = NULL;
 		}
 		
-		atlas_rq->pending_work &= ~ PENDING_STOP_CFS_ADVANCED;
 		BUG_ON(atlas_rq->advance_in_cfs != NULL);
 	}
 
-	if (atlas_rq->pending_work & PENDING_START_CFS_ADVANCED) {
-
+	if (test_and_clear_bit(PENDING_START_CFS_ADVANCED,
+			       &atlas_rq->pending_work)) {
+		atlas_debug_(PENDING_WORK, "Start advancing in CFS");
 		/* slack time? timer routine may have reset flag already */
 		if (atlas_rq->timer_target == ATLAS_SLACK)
 			advance_thread_in_cfs(atlas_rq);
-		
-		atlas_rq->pending_work &= ~ PENDING_START_CFS_ADVANCED;
 	}
 
-	if (atlas_rq->pending_work & PENDING_JOB_TIMER) {
+	if (test_and_clear_bit(PENDING_JOB_TIMER, &atlas_rq->pending_work)) {
 		/* deadline miss or execution time overrun */
 		
 		struct sched_atlas_entity *se = &prev->atlas;
 		
 		if (ktime_cmp(se->job->sexectime, ktime_set(0,30000)) <= 0) {
 			se->flags |= ATLAS_EXECTIME;
-			printk_deferred("PUT_FAIR: job->sexec = %llu, job->exec = %llu\n", 
-				ktime_to_ns(prev->atlas.job->sexectime),
-				ktime_to_ns(prev->atlas.job->exectime));
-			atlas_switch_scheduler(rq, prev, &fair_sched_class);
+			atlas_debug_(PENDING_WORK,
+				    "Execution time overrun for " JOB_FMT,
+				    JOB_ARG(prev->atlas.job));
+			atlas_set_scheduler(rq, prev, SCHED_NORMAL);
 		} 
 
-		else {			
-			printk_deferred("PUT_RECO: job->sexec = %llu, job->exec = %llu\n", 
-				ktime_to_ns(prev->atlas.job->sexectime),
-				ktime_to_ns(prev->atlas.job->exectime));
-			atlas_switch_scheduler(rq, prev, &atlas_recover_sched_class);
+		else {
+			atlas_debug_(PENDING_WORK, "Deadline miss for " JOB_FMT,
+				    JOB_ARG(prev->atlas.job));
+			atlas_set_scheduler(rq, prev, SCHED_ATLAS_RECOVER);
 		}
-		
-		atlas_rq->pending_work &= ~ PENDING_JOB_TIMER;
 	}
 
-	if (atlas_rq->pending_work & PENDING_MOVE_TO_CFS) {
-		atlas_switch_scheduler(rq, prev, &fair_sched_class);
-		atlas_rq->pending_work &= ~ PENDING_MOVE_TO_CFS;
-	}
-	
-	if (atlas_rq->pending_work & PENDING_MOVE_TO_RECOVER) {
-		atlas_switch_scheduler(rq, prev, &atlas_recover_sched_class);
-		atlas_rq->pending_work &= ~ PENDING_MOVE_TO_RECOVER;
+	if (test_and_clear_bit(PENDING_MOVE_TO_CFS, &atlas_rq->pending_work)) {
+		atlas_debug_(PENDING_WORK, "Move " JOB_FMT " to CFS",
+			    JOB_ARG(prev->atlas.job));
+		atlas_set_scheduler(rq, prev, SCHED_NORMAL);
 	}
 
-	if (atlas_rq->pending_work & PENDING_MOVE_TO_ATLAS) {
-		atlas_switch_scheduler(rq, atlas_rq->move_to_atlas, &atlas_sched_class);
+	if (test_and_clear_bit(PENDING_MOVE_TO_RECOVER,
+			       &atlas_rq->pending_work)) {
+		atlas_debug_(PENDING_WORK, "Move " JOB_FMT " to ATLAS-Recover",
+			    JOB_ARG(prev->atlas.job));
+		atlas_set_scheduler(rq, prev, SCHED_ATLAS_RECOVER);
+	}
+
+	if (test_and_clear_bit(PENDING_MOVE_TO_ATLAS,
+			       &atlas_rq->pending_work)) {
+		atlas_debug_(PENDING_WORK, "Move " JOB_FMT " to ATLAS",
+			    JOB_ARG(atlas_rq->move_to_atlas->atlas.job));
+		atlas_set_scheduler(rq, atlas_rq->move_to_atlas, SCHED_ATLAS);
 		atlas_rq->move_to_atlas = NULL;
-		atlas_rq->pending_work &= ~ PENDING_MOVE_TO_ATLAS;
 	}
-	
-	BUG_ON(atlas_rq->pending_work);
 }
 
 /*******************************************************
@@ -925,6 +970,9 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	unsigned long flags;
 	int timer = 1;
 	int need_put = 1;
+
+	if (unlikely(rq->atlas.pending_work))
+		atlas_do_pending_work(rq, prev);
 
 	/*
 	 * only proceed if there are runnable tasks
@@ -1658,9 +1706,6 @@ SYSCALL_DEFINE0(atlas_next)
 	struct atlas_rq *atlas_rq;
 	unsigned long flags;
 
-	atlas_debug(SYS_NEXT, "pid=%d policy=%s job=%p", current->pid,
-		sched_name(current->sched_class), se->job);
-	
 	hrtimer_cancel(&se->timer);	
 	//reset rq timer
 	//FIXME:
@@ -1720,8 +1765,11 @@ SYSCALL_DEFINE0(atlas_next)
 			BUG_ON(!(current->atlas.flags & ATLAS_CFS_ADVANCED));
 			BUG_ON(atlas_rq->timer_target != ATLAS_SLACK && !(atlas_rq->pending_work & PENDING_STOP_CFS_ADVANCED));
 			reset_timer(atlas_rq);
-		} else
-			atlas_switch_scheduler(rq, current, &atlas_sched_class);
+		} else {
+			atlas_debug_(SYS_NEXT, "Switching to ATLAS");
+			if (current->policy != SCHED_ATLAS)
+				atlas_set_scheduler(rq, current, SCHED_ATLAS);
+		}
 	} /* else
 		atlas_switch_scheduler(rq, current, &fair_sched_class); */
 	
