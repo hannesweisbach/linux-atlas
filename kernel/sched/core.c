@@ -3765,14 +3765,18 @@ static void __setscheduler(struct rq *rq, struct task_struct *p,
 	else
 		p->prio = normal_prio(p);
 
-	if (dl_prio(p->prio))
+#ifdef CONFIG_ATLAS
+	/* ATLAS does not have a priority associated with the scheduling class,
+	 * so we have to check for it first. */
+	if (p->policy == SCHED_ATLAS)
+		p->sched_class = &atlas_sched_class;
+	else if (p->policy == SCHED_ATLAS_RECOVER)
+		p->sched_class = &atlas_recover_sched_class;
+#endif
+	else if (dl_prio(p->prio))
 		p->sched_class = &dl_sched_class;
 	else if (rt_prio(p->prio))
 		p->sched_class = &rt_sched_class;
-#ifdef CONFIG_ATLAS
-	else if (p->policy == SCHED_ATLAS)
-		p->sched_class = &atlas_sched_class;
-#endif
 	else
 		p->sched_class = &fair_sched_class;
 }
