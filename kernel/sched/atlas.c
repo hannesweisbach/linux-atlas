@@ -1599,26 +1599,18 @@ static int get_slacktime(struct atlas_rq *atlas_rq, ktime_t *slack) {
 		return 0;
 }
 
-static void cleanup_rq(struct atlas_rq *atlas_rq) {
+static void cleanup_rq(struct atlas_rq *atlas_rq)
+{
+	struct atlas_job *curr = pick_first_job(atlas_rq);
 	ktime_t now = ktime_get();
-	struct atlas_job *tmp, *s = pick_first_job(atlas_rq);
 
-	atlas_debug(RBTREE, "cleanup_rq");
 	assert_raw_spin_locked(&atlas_rq->lock);
-	while (s && unlikely(job_missed_deadline(s, now))) {
-		/*struct task_struct *p = task_of_job(s);
-		
-		if (p) {
-			printk_deferred("drop Submission from rq; sub=%p pid=%d scheduler=%d sub_task=%p\n",
-					s, p->pid, p->policy, p->atlas.job);
-			put_task_struct(p);
-		} else {
-			printk_deferred("drop Submission of nonexistent task from rq; sub=%p\n", s);
-		}*/
-
-		tmp = s;
-		s = pick_next_job(s);
-		erase_rq_job(atlas_rq, tmp);
+	while (curr && unlikely(job_missed_deadline(curr, now))) {
+		struct atlas_job *next = pick_next_job(curr);
+		atlas_debug(RUNQUEUE, "Removing Job %lld from the RQ (d: %lld)",
+			    curr->id, ktime_to_ms(curr->deadline));
+		erase_rq_job(atlas_rq, curr);
+		curr = next;
 	}
 }
 
