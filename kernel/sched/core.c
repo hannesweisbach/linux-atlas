@@ -3249,11 +3249,6 @@ static void __sched notrace __schedule(bool preempt)
 	post_schedule(rq);
 
 	sched_preempt_enable_no_resched();
-
-#ifdef CONFIG_ATLAS
-	if (rq->atlas.pending_work || rq->atlas_recover.pending_work)
-		set_tsk_need_resched(next);
-#endif
 }
 
 static inline void sched_submit_work(struct task_struct *tsk)
