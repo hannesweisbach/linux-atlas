@@ -144,58 +144,53 @@ static inline struct sched_atlas_entity *pick_next_entity_recover
 
 static void update_curr_atlas_recover(struct rq *rq)
 {
-    //copied from rt
-	struct task_struct *curr = rq->curr;
-	struct sched_atlas_entity *se = &curr->atlas;
 	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
+	struct sched_atlas_entity *atlas_se = atlas_recover_rq->curr;
+	struct sched_entity *se = &task_of(atlas_se)->se;
+	u64 now = rq_clock_task(rq);
 	u64 delta_exec;
-	struct atlas_job *job = se->job;
-	ktime_t diff_ktime, now;
 
-	if (curr->sched_class != &atlas_recover_sched_class)
+	if (unlikely(!atlas_se))
 		return;
 
-	delta_exec = rq->clock_task - curr->se.exec_start;
+	delta_exec = now - se->exec_start;
 	if (unlikely((s64)delta_exec < 0))
 		delta_exec = 0;
 
-	schedstat_set(curr->se.statistics.exec_max, max(curr->se.statistics.exec_max, delta_exec));
+	se->exec_start = now;
 
-	curr->se.sum_exec_runtime += delta_exec;
-	account_group_exec_runtime(curr, delta_exec);
+	schedstat_set(se->statistics.exec_max,
+		      max(se->statistics.exec_max, delta_exec));
 
-	now = ktime_get();
-	diff_ktime = ktime_sub(now, se->start);
-    update_stats_curr_start(atlas_recover_rq, se, now); 
-	cpuacct_charge(curr, delta_exec);
+	se->sum_exec_runtime += delta_exec;
 
-	//it's very unlikely, but possible in sys_atlas_next
-	if (unlikely(!job))
-		return;
-	
-	//update exectime
-	
-	job->exectime = ktime_sub(job->exectime, diff_ktime);
-	if (ktime_to_ns(job->exectime) <= 0) {
-		job->exectime = ktime_set(0,0);
-		job->sexectime = job->exectime;
-		goto exectime_exceeded;
+	{
+		struct task_struct *tsk = task_of(atlas_se);
+		cpuacct_charge(tsk, delta_exec);
+		account_group_exec_runtime(tsk, delta_exec);
 	}
-	
-	job->sexectime = ktime_sub(job->sexectime, diff_ktime);
-	if (ktime_to_ns(job->sexectime) <= 0) {
-		job->sexectime = ktime_set(0,0);
-		goto exectime_exceeded;
-	}
-	
-	return;
 
-exectime_exceeded:
-	se->flags |= ATLAS_EXECTIME;
-	return;
+	{
+		struct atlas_job *job = atlas_se->job;
+		ktime_t exec = ns_to_ktime(delta_exec);
+
+		if (unlikely(!job))
+			return;
+
+		job->exectime = ktime_sub(job->exectime, exec);
+		if (ktime_to_ns(job->exectime) <= 0) {
+			job->exectime = ktime_set(0, 0);
+			job->sexectime = job->exectime;
+			atlas_se->flags |= ATLAS_EXECTIME;
+		}
+
+		job->sexectime = ktime_sub(job->sexectime, exec);
+		if (ktime_to_ns(job->sexectime) <= 0) {
+			job->sexectime = ktime_set(0, 0);
+			atlas_se->flags |= ATLAS_EXECTIME;
+		}
+	}
 }
-
-
 
 /*
  * enqueue task
