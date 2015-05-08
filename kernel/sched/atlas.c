@@ -567,11 +567,12 @@ static void debug_task(struct task_struct *p) {
  */
 static struct atlas_job *pop_task_job(struct sched_atlas_entity *se)
 {
+	unsigned long flags;
 	struct atlas_job *s = NULL;
 	struct list_head *elem;
-	
-	spin_lock(&se->jobs_lock);
-	
+
+	spin_lock_irqsave(&se->jobs_lock, flags);
+
 	if (list_empty(&se->jobs))
 		goto out;
 	
@@ -579,7 +580,7 @@ static struct atlas_job *pop_task_job(struct sched_atlas_entity *se)
 	s = list_entry(elem, struct atlas_job, list);
 	list_del(elem);
 out:
-	spin_unlock(&se->jobs_lock);
+	spin_unlock_irqrestore(&se->jobs_lock, flags);
 	return s;
 }
 
@@ -590,7 +591,8 @@ static void assign_task_job(struct task_struct *p, struct atlas_job *job)
 {
 	struct sched_atlas_entity *se;
 	unsigned wakeup = 0;
-	
+	unsigned long flags;
+
 	BUG_ON(!p);
 
 #if !MIGRATE_ON
@@ -606,7 +608,7 @@ static void assign_task_job(struct task_struct *p, struct atlas_job *job)
 
 	se = &p->atlas;
 
-	spin_lock(&se->jobs_lock);
+	spin_lock_irqsave(&se->jobs_lock, flags);
 	wakeup = list_empty(&se->jobs) && (se->state == ATLAS_BLOCKED);
 
 	{
@@ -622,9 +624,8 @@ static void assign_task_job(struct task_struct *p, struct atlas_job *job)
 		}
 		list_add(&job->list, entry);
 	}
+	spin_unlock_irqrestore(&se->jobs_lock, flags);
 
-	spin_unlock(&se->jobs_lock);
-	
 	/*
 	 * wake up process
 	 */
