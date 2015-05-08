@@ -3478,6 +3478,12 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 	 *      --> -dl task blocks on mutex A and could preempt the
 	 *          running task
 	 */
+#ifdef CONFIG_ATLAS
+	WARN_ONCE(p->sched_class == &atlas_sched_class ||
+		  p->sched_class == &atlas_recover_sched_class ||
+		  p->policy == SCHED_ATLAS || p->policy == SCHED_ATLAS_RECOVER,
+		  "RT mutexes are not implemented for ATLAS.");
+#endif
 	if (dl_prio(prio)) {
 		struct task_struct *pi_task = rt_mutex_get_top_task(p);
 		if (!dl_prio(p->normal_prio) ||
