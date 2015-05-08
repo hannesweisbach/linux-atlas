@@ -4,11 +4,13 @@
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
 #include <linux/sched/atlas.h>
+#include <linux/sched.h>
 
 #include "sched.h"
 #include "atlas.h"
 #include "atlas_common.h"
 
+#include <trace/events/sched.h>
 #ifdef CONFIG_ATLAS_TRACE
 #include <trace/events/atlas.h>
 #endif
@@ -38,6 +40,8 @@ enum update_exec_time {
 };
 
 static void assign_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job);
+static inline void close_gaps(struct atlas_job *job, enum update_exec_time update);
+static void check_admission_plan(struct atlas_rq *atlas_rq);
 
 void sched_log(const char *fmt, ...)
 {
@@ -769,66 +773,115 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->skip_update_curr = 0;
 }
 
-/*
- * We pick a new current task - update its stats:
- */
-static inline void
-update_stats_curr_start(struct atlas_rq *atlas_rq, struct sched_atlas_entity *se)
+static void update_stats_wait_start(struct rq *rq, struct sched_entity *se)
 {
-	/*
-	 * starting new timer period
-	 */
-	task_of(se)->se.exec_start = rq_of(atlas_rq)->clock_task;
+	schedstat_set(se->statistics.wait_start, rq_clock(rq));
+}
+
+static void update_stats_wait_end(struct rq *rq, struct sched_entity *se)
+{
+	schedstat_set(se->statistics.wait_max,
+		      max(se->statistics.wait_max,
+			  rq_clock(rq) - se->statistics.wait_start));
+	schedstat_set(se->statistics.wait_count, se->statistics.wait_count + 1);
+	schedstat_set(se->statistics.wait_sum,
+		      se->statistics.wait_sum + rq_clock(rq) -
+				      se->statistics.wait_start);
+#ifdef CONFIG_SCHEDSTATS
+	trace_sched_stat_wait(rq->curr,
+			      rq_clock(rq) - se->statistics.wait_start);
+#endif
+	schedstat_set(se->statistics.wait_start, 0);
+}
+
+static inline void update_stats_curr_start(struct atlas_rq *atlas_rq,
+					   struct sched_atlas_entity *se)
+{
+	task_of(se)->se.exec_start = rq_clock_task(rq_of(atlas_rq));
 	se->start = ktime_get();
 }
 
+int update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
+			  ktime_t delta_exec)
+{
+
+	int ret = 0;
+
+	assert_raw_spin_locked(&atlas_rq->lock);
+
+	job->exectime = ktime_sub(job->exectime, delta_exec);
+
+	if (unlikely(ktime_neg(job->exectime))) {
+		job->exectime = ktime_set(0, 0);
+		job->sexectime = ktime_set(0, 0);
+		ret = 1;
+		goto out;
+	}
+
+	job->sexectime = ktime_sub(job->sexectime, delta_exec);
+	if (ktime_neg(job->sexectime)) {
+		job->sexectime = ktime_set(0, 0);
+		ret = 2;
+	}
+
+out:
+	// adapt admission plan
+	close_gaps(job, NO_UPDATE_EXEC_TIME);
+
+	check_admission_plan(atlas_rq);
+
+	return ret;
+}
 
 static void update_curr_atlas(struct rq *rq)
 {
-    //copied from rt
-	struct task_struct *curr = rq->curr;
-	struct sched_atlas_entity *se = &curr->atlas;
 	struct atlas_rq *atlas_rq = &rq->atlas;
+	struct sched_atlas_entity *atlas_se = atlas_rq->curr;
+	struct sched_entity *se = &task_of(atlas_se)->se;
+	u64 now = rq_clock_task(rq);
 	u64 delta_exec;
-	struct atlas_job *job = se->job;
-	unsigned long flags;
-	ktime_t prev_start;
 
-	if (curr->sched_class != &atlas_sched_class) {
-		sched_log("update_curr: wrong scheduling class!");
+	if (unlikely(!atlas_se))
 		return;
-	}
 
-	delta_exec = rq->clock_task - curr->se.exec_start;
-	
+	delta_exec = now - se->exec_start;
 	if (unlikely((s64)delta_exec < 0))
 		delta_exec = 0;
 
-	schedstat_set(curr->se.statistics.exec_max,
-		      max(curr->se.statistics.exec_max, delta_exec));
+	se->exec_start = now;
+	//atlas_se->start = ktime_get();
 
-	curr->se.sum_exec_runtime += delta_exec;
-	account_group_exec_runtime(curr, delta_exec);
+	schedstat_set(se->statistics.exec_max,
+		      max(delta_exec, se->statistics.exec_max));
 
-	prev_start = se->start;
-	update_stats_curr_start(atlas_rq, se);
-	diff_ktime = ktime_sub(se->start, prev_start);
-	cpuacct_charge(curr, delta_exec);
-	
-	
-	/*
-	 * do not update execution plan if there is no job
-	 */
-	if (unlikely(!job))
-		return;
+	se->sum_exec_runtime += delta_exec;
 
-	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-	//update_execution_time(atlas_rq, job, ns_to_ktime(delta_exec)); 
-	update_execution_time(atlas_rq, job, diff_ktime); 
-	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+	{
+		struct task_struct *tsk = task_of(atlas_se);
+		// trace_sched_stat_runtime(curr, delta_exec,
+		cpuacct_charge(tsk, delta_exec);
+		account_group_exec_runtime(tsk, delta_exec);
+	}
+
+	{
+		//ktime_t prev_start, diff_ktime;
+		//prev_start = atlas_se->start;
+		//update_stats_curr_start(atlas_rq, atlas_se);
+		//diff_ktime = ktime_sub(atlas_se->start, prev_start);
+		unsigned long flags;
+		struct atlas_job *job = atlas_se->job;
+
+		if (unlikely(!job))
+			return;
+
+		atlas_debug(ADAPT_SEXEC, "Accounting %lldus to " JOB_FMT,
+			    delta_exec / 1000, JOB_ARG(job));
+
+		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+		update_execution_time(atlas_rq, job, ns_to_ktime(delta_exec));
+		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+	}
 }
-
-
 
 /*
  * enqueue task
@@ -841,7 +894,11 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 	struct sched_atlas_entity *se = &p->atlas;
 
 	atlas_debug(ENQUEUE, "curr %p, se: %p", atlas_rq->curr, se);
+
+	update_curr_atlas(rq);
+
 	if (atlas_rq->curr != se) {
+		update_stats_wait_start(rq, &p->se);
 		enqueue_entity(atlas_rq, se);
 	}
     
@@ -886,17 +943,16 @@ static void dequeue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 	
 	update_curr_atlas(rq);
 
-    if (atlas_rq->curr == se)
+	if (atlas_rq->curr == se) {
 		atlas_rq->curr = NULL;
-	else
+	} else {
+		update_stats_wait_end(rq, &p->se);
 		dequeue_entity(atlas_rq, se);
-	
-	se->on_rq = 0;
-	
-    atlas_rq->nr_runnable--;
+	}
 
-    sub_nr_running(rq, 1);
-	return;
+	se->on_rq = 0;
+	atlas_rq->nr_runnable--;
+	sub_nr_running(rq, 1);
 }
 
 static void yield_task_atlas(struct rq *rq)
@@ -1180,6 +1236,7 @@ static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 
 	if (se->on_rq) {
 		update_curr_atlas(rq);
+		update_stats_wait_start(rq, &prev->se);
 		enqueue_entity(atlas_rq, se);
 	}
 
@@ -1194,16 +1251,22 @@ static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 static void set_curr_task_atlas(struct rq *rq)
 {
 	struct task_struct *p = rq->curr;
-	struct sched_atlas_entity *se = &p->atlas;
+	struct sched_atlas_entity *atlas_se = &p->atlas;
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	
 	atlas_debug(SET_CURR_TASK, "pid=%d", p->pid);
-	update_stats_curr_start(atlas_rq, se);
+	struct sched_entity *se = &rq->curr->se;
 
-    BUG_ON(rq->atlas.curr);
-	rq->atlas.curr = se;
-	
-    return;
+	if(se->on_rq) {
+		update_stats_wait_end(rq, se);
+		dequeue_entity(atlas_rq, atlas_se);
+	}
+	update_stats_curr_start(atlas_rq, atlas_se);
+
+	BUG_ON(atlas_rq->curr);
+	atlas_rq->curr = atlas_se;
+	/* TODO: CONFIG_SCHEDSTAT accounting. */
+	se->prev_sum_exec_runtime = se->sum_exec_runtime;
 }
 
 static void task_tick_atlas(struct rq *rq, struct task_struct *p, int queued)
@@ -1471,37 +1534,6 @@ static void assign_rq_job(struct atlas_rq *atlas_rq,
 	}
 
 	check_admission_plan(atlas_rq);
-}
-
-int update_execution_time(struct atlas_rq *atlas_rq,
-	struct atlas_job *job, ktime_t delta_exec) {
-	
-	int ret = 0;
-
-	assert_raw_spin_locked(&atlas_rq->lock);
-	
-	job->exectime = ktime_sub(job->exectime, delta_exec); 
-
-	if (unlikely(ktime_neg(job->exectime))) {
-		job->exectime = ktime_set(0,0);
-		job->sexectime = ktime_set(0,0);
-		ret = 1;
-		goto out;
-	}
-
-	job->sexectime = ktime_sub(job->sexectime, delta_exec);
-	if (ktime_neg(job->sexectime)) {
-		job->sexectime = ktime_set(0,0);
-		ret = 2;
-	}
-
-out:
-	//adapt admission plan
-	close_gaps(job, NO_UPDATE_EXEC_TIME);
-
-	check_admission_plan(atlas_rq);   
-	
-	return ret;
 }
 
 /*
