@@ -3223,13 +3223,6 @@ static void __sched notrace __schedule(bool preempt)
 		}
 		switch_count = &prev->nvcsw;
 	}
-#ifdef CONFIG_ATLAS
-	if (unlikely(rq->atlas.pending_work))
-		atlas_do_pending_work(rq);
-
-	if (unlikely(rq->atlas_recover.pending_work))
-		atlas_recover_do_pending_work(rq);
-#endif
 
 	if (task_on_rq_queued(prev))
 		update_rq_clock(rq);
