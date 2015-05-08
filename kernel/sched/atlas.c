@@ -330,25 +330,22 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 
 	BUG_ON(atlas_rq->timer_target == ATLAS_NONE);
 
-	atlas_debug(TIMER, "Timer target: %s",
-		    atlas_rq->timer_target == ATLAS_JOB
-				    ? "JOB"
-				    : atlas_rq->timer_target == ATLAS_SLACK
-						      ? "SLACK"
-						      : "BUG");
 	sched_log("Timer: %s", atlas_rq->timer_target == ATLAS_JOB ? "JOB" :
 						   atlas_rq->timer_target == ATLAS_SLACK ? "SLACK" : "BUG");
 	
 	switch (atlas_rq->timer_target) {
 		case ATLAS_JOB:
+			atlas_debug_(TIMER, "JOB");
 			BUG_ON(rq->curr->sched_class != &atlas_sched_class);
 			atlas_rq->pending_work |= PENDING_JOB_TIMER;
 			break;
 		case ATLAS_SLACK:
 			add_nr_running(rq, 1);
 			atlas_rq->pending_work |= PENDING_STOP_CFS_ADVANCED;
+			atlas_debug_(TIMER, "SLACK");
 			break;
 		default:
+			atlas_debug_(TIMER, "BUG");
 			BUG();
 	}
 
@@ -1844,7 +1841,7 @@ SYSCALL_DEFINE0(atlas_next)
 	__set_current_state(TASK_RUNNING);
 	se->state = ATLAS_RUNNING;
 
-	atlas_debug(SYS_NEXT, "pid=%d job=%p job->deadline=%llu",
+	atlas_debug_(SYS_NEXT, "pid=%d job=%p job->deadline=%llu",
 		current->pid, se->job, ktime_to_us(se->job->deadline));
 	
 	preempt_disable();
@@ -1859,11 +1856,12 @@ out_timer:
 	 * if the deadline has already passed, the callback will be called
 	 * resulting in a scheduler switch to CFS
 	 */
-	atlas_debug(SYS_NEXT, "pid=%d setup timer for real_job %p (job %p) (need_resched=%d).",
-		current->pid, se->real_job, se->job, test_tsk_need_resched(current));
-	atlas_debug(SYS_NEXT, "now: %lld, deadline %lld, difference: %lld",
-		    ktime_get().tv64, se->real_job->deadline.tv64,
-		    ktime_sub(se->real_job->deadline, ktime_get()).tv64);
+	atlas_debug_(SYS_NEXT,
+		     "Returning with " JOB_FMT "/" JOB_FMT
+		     " for Task '%s' (%d') and Job timer set to %lldms",
+		     JOB_ARG(se->real_job), JOB_ARG(se->job), current->comm,
+		     task_pid_vnr(current),
+		     ktime_to_ms(se->real_job->deadline));
 	hrtimer_start(&se->timer, se->real_job->deadline, HRTIMER_MODE_ABS_PINNED);
 	
 	sched_log("NEXT pid=%d job=%p", current->pid, current->atlas.job);
@@ -1892,7 +1890,7 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 	unsigned long flags;
 
 	if (!exectime || !deadline || pid < 0) {
-		atlas_debug(SYS_SUBMIT, "One is not valid: pid=%u, "
+		atlas_debug_(SYS_SUBMIT, "One is not valid: pid=%u, "
 					"exectime=0x%p, deadline=0x%p",
 			    pid, exectime, deadline);
 		return -EINVAL;
@@ -1900,7 +1898,7 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 
 	if (copy_from_user(&lexectime, exectime, sizeof(struct timeval)) ||
 	    copy_from_user(&ldeadline, deadline, sizeof(struct timeval))) {
-		atlas_debug(SYS_SUBMIT, "bad address");
+		atlas_debug_(SYS_SUBMIT, "bad address");
 		return -EFAULT;
 	}
 
@@ -1917,13 +1915,13 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 	pidp = find_get_pid(pid);
 
 	if (!pidp) {
-		atlas_debug(SYS_SUBMIT, "No process with PID %d found.", pid);
+		atlas_debug_(SYS_SUBMIT, "No process with PID %d found.", pid);
 		return -ESRCH;
 	}
 
 	job = job_alloc(pidp, id, kdeadline, timeval_to_ktime(lexectime));
 	if (!job) {
-		atlas_debug(SYS_SUBMIT, "Could not allocate job structure.");
+		atlas_debug_(SYS_SUBMIT, "Could not allocate job structure.");
 		return -ENOMEM;
 	}
 
