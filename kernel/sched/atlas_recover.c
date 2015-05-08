@@ -351,12 +351,26 @@ static int select_task_rq_atlas_recover(struct task_struct *p, int prev_cpu,
 }
 #endif /* CONFIG_SMP */
 
+static void atlas_recover_do_pending_work(struct rq *rq, struct task_struct *prev)
+{
+	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
+
+	if (atlas_recover_rq->pending_work & PENDING_MOVE_TO_CFS) {
+		atlas_set_scheduler(rq, prev, SCHED_NORMAL);
+		atlas_recover_rq->pending_work &= ~ PENDING_MOVE_TO_CFS;
+	}
+	
+	BUG_ON(atlas_recover_rq->pending_work);
+}
+
 static struct task_struct *
 pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 {
         struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
 	struct sched_atlas_entity *se;
 
+	if (unlikely(rq->atlas_recover.pending_work))
+		atlas_recover_do_pending_work(rq, prev);
 
 	/*
 	 * only proceed if there are runnable tasks
@@ -414,19 +428,6 @@ static void set_curr_task_atlas_recover(struct rq *rq)
 	setup_rq_timer(atlas_recover_rq, se->job);
 
     return;
-}
-
-
-void atlas_recover_do_pending_work(struct rq *rq) {
-	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
-	struct task_struct *prev = rq->curr;
-
-	if (atlas_recover_rq->pending_work & PENDING_MOVE_TO_CFS) {
-		atlas_switch_scheduler(rq, prev, &fair_sched_class);
-		atlas_recover_rq->pending_work &= ~ PENDING_MOVE_TO_CFS;
-	}
-	
-	BUG_ON(atlas_recover_rq->pending_work);
 }
 
 /*
