@@ -313,7 +313,6 @@ static inline void reset_timer(struct atlas_rq *atlas_rq) {
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 }
 
-void atlas_switch_scheduler(struct rq *, struct task_struct *, const struct sched_class *);
 static void update_curr_atlas(struct rq *);
 
 

@@ -249,9 +249,6 @@ static void yield_task_atlas_recover(struct rq *rq)
     return;
 }
 
-extern void atlas_switch_scheduler(struct rq *,
-	struct task_struct *, const struct sched_class *);
-
 static void put_prev_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 {	
 	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;

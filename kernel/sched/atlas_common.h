@@ -127,6 +127,7 @@ extern void sched_log(const char *fmt, ...);
 int update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
 			  ktime_t delta_exec);
 void erase_rq_job(struct atlas_rq *, struct atlas_job *);
+void atlas_set_scheduler(struct rq *, struct task_struct *, int policy);
 
 #define JOB_FMT "Job %lld (e: %lld/%lld, d: %lld/%lld)"
 #define JOB_ARG(job)                                                           \
