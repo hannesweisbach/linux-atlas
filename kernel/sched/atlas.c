@@ -23,12 +23,14 @@ unsigned int sysctl_sched_atlas_advance_in_cfs = 0;
 #define TIMER_EXPIRED                0x01
 
 /* pending work definitions */
-#define PENDING_STOP_CFS_ADVANCED    0x01
-#define PENDING_START_CFS_ADVANCED   0x02
-#define PENDING_JOB_TIMER            0x04
-#define PENDING_MOVE_TO_CFS          0x08
-#define PENDING_MOVE_TO_RECOVER      0x10
-#define PENDING_MOVE_TO_ATLAS        0x20
+enum pending_work {
+	PENDING_STOP_CFS_ADVANCED = 0x01,
+	PENDING_START_CFS_ADVANCED = 0x02,
+	PENDING_JOB_TIMER = 0x04,
+	PENDING_MOVE_TO_CFS = 0x08,
+	PENDING_MOVE_TO_RECOVER = 0x10,
+	PENDING_MOVE_TO_ATLAS = 0x20,
+};
 
 enum update_exec_time {
 	UPDATE_EXEC_TIME,
