@@ -410,9 +410,9 @@ again:
 
 	// job?
 	if (se->job) {
-		if (ktime_zero(se->job->sexectime)) {
 			atlas_recover_rq->pending_work |= PENDING_MOVE_TO_CFS;
 			atlas_recover_do_pending_work(rq, tsk);
+		if (!has_execution_time_left(se)) {
 			goto again;
 		}
 

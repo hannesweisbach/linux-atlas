@@ -129,8 +129,8 @@ size_t print_atlas_job(const struct atlas_job const *job, char *buf,
 				 ktime_to_ms(job->sdeadline),
 				 ktime_to_ms(ktime_sub(job->deadline,
 						       job->exectime)),
-				 ktime_to_ms(job->deadline), job,
 				 atomic_read(&job->count));
+				 ktime_to_ms(job->deadline), job);
 	}
 }
 
@@ -148,7 +148,7 @@ size_t print_atlas_rq(const struct atlas_rq const *atlas_rq, char *buf,
 			start = prev->sdeadline;
 			end = job_start(job);
 			diff = ktime_sub(end, start);
-			if (!ktime_zero(diff)) {
+			if (!ktime_compare(diff, ktime_set(0, 0))) {
 				offset += scnprintf(&buf[offset], size - offset,
 						    "JOBS: %6lld - %6lld "
 						    "(gap=%lld)\n",
