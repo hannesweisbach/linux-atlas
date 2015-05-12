@@ -359,38 +359,33 @@ static struct task_struct *
 pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 {
 	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
-	struct sched_atlas_entity *se =
-			pick_first_entity_recover(atlas_recover_rq);
-	struct task_struct * tsk;
+	struct sched_atlas_entity *se;
+	struct task_struct *tsk;
 
-	if (prev->policy == SCHED_ATLAS_RECOVER) {
-		if (!se ||
-		    ktime_to_ns(prev->atlas.job->deadline) <
-				    ktime_to_ns(se->job->deadline)) {
-			tsk = task_of(se);
-			if (se)
-				atlas_debug(PICK_NEXT_TASK,
-					    "'%s' (%d) because " JOB_FMT
-					    " has earlier deadline "
-					    "then " JOB_FMT "\n",
-					    tsk->comm, task_pid_vnr(tsk),
-					    JOB_ARG(se->job),
-					    JOB_ARG(prev->atlas.job));
-			else
-				atlas_debug(PICK_NEXT_TASK, "'%s' (%d) because "
-							    "no other task "
-							    "available.\n",
-					    prev->comm, task_pid_vnr(prev));
-			/* choose prev again if there is no other ATLAS recover
-			 * job, or if this job has an earlier deadline. This
-			 * saves a put_prev_task()/dequeue_entity() pair, if
-			 * prev would be selected again. */
-			return prev;
-		}
+	/* call put put_prev_task if we can find a next task:
+	 * . we have runnable tasks
+	 * . prev is one of ours (nr_runnable will be 1 after put_prev_task())
+	 *   and prev has execution time left (otherwise it will be moved to
+	 *   CFS)
+	 */
+	if (atlas_recover_rq->nr_runnable ||
+	    (prev->policy == SCHED_ATLAS_RECOVER &&
+	     has_execution_time_left(&prev->atlas))) {
+		atlas_debug(PICK_NEXT_TASK, "put_prev_task '%s/%d': %s",
+			    prev->comm, task_pid_vnr(prev),
+			    atlas_recover_rq->nr_runnable
+					    ? "nr_runnable"
+					    : "execution time left");
 		put_prev_task(rq, prev);
 	}
 
-again:
+	if (prev->policy == SCHED_ATLAS_RECOVER &&
+	    !has_execution_time_left(&prev->atlas)) {
+		atlas_debug(PICK_NEXT_TASK, "Switch scheduler for '%s/%d'",
+			    prev->comm, task_pid_vnr(prev));
+		atlas_set_scheduler(rq, prev, SCHED_NORMAL);
+	}
+
 	if (likely(!atlas_recover_rq->nr_runnable)) {
 		return NULL;
 	}
@@ -405,22 +400,16 @@ again:
 	atlas_debug(PICK_NEXT_TASK, "'%s' (%d) " JOB_FMT " to run.", tsk->comm,
 		    task_pid_vnr(tsk), JOB_ARG(se->job));
 
-	// update start
 	update_stats_curr_start(atlas_recover_rq, se, ktime_get());
 
-	// job?
-	if (se->job) {
-			atlas_recover_rq->pending_work |= PENDING_MOVE_TO_CFS;
-			atlas_recover_do_pending_work(rq, tsk);
-		if (!has_execution_time_left(se)) {
-			goto again;
-		}
+	WARN(!se->job, "SE of %s/%d has no job\n", tsk->comm,
+	     task_pid_vnr(tsk));
 
-		else {
-			setup_rq_timer(atlas_recover_rq,
-				       atlas_recover_rq->curr->job);
-		}
-	}
+	WARN(!has_execution_time_left(se),
+	     JOB_FMT " of Task '%s/%d' has no execution time left\n",
+	     JOB_ARG(se->job), tsk->comm, task_pid_vnr(tsk));
+
+	setup_rq_timer(atlas_recover_rq, atlas_recover_rq->curr->job);
 
 	return tsk;
 }
