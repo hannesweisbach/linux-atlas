@@ -112,9 +112,9 @@ static int entity_before(struct sched_atlas_entity *a,
 	return job_before(a->job, b->job);
 }
 
-static inline int ktime_zero(const ktime_t a)
+static inline int has_execution_time_left(const struct sched_atlas_entity *se)
 {
-	return ktime_equal(ktime_set(0, 0), a);
+	return !ktime_equal(ktime_set(0, 0), se->job->sexectime);
 }
 
 static inline struct task_struct *

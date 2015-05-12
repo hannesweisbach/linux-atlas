@@ -1095,7 +1095,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	 * job of se might be removed by cleanup
 	 */
 	if (unlikely(!job_in_rq(se->job))) {
-		if (ktime_zero(se->job->sexectime)) {
+		if (has_execution_time_left(se)) {
 			atlas_rq->pending_work |= PENDING_MOVE_TO_CFS;
 		}
 		else {
