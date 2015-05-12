@@ -358,45 +358,71 @@ static void atlas_recover_do_pending_work(struct rq *rq, struct task_struct *pre
 static struct task_struct *
 pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 {
-        struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
-	struct sched_atlas_entity *se;
+	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
+	struct sched_atlas_entity *se =
+			pick_first_entity_recover(atlas_recover_rq);
+	struct task_struct * tsk;
 
-	if (unlikely(rq->atlas_recover.pending_work))
-		atlas_recover_do_pending_work(rq, prev);
+	if (prev->policy == SCHED_ATLAS_RECOVER) {
+		if (!se ||
+		    ktime_to_ns(prev->atlas.job->deadline) <
+				    ktime_to_ns(se->job->deadline)) {
+			tsk = task_of(se);
+			if (se)
+				atlas_debug(PICK_NEXT_TASK,
+					    "'%s' (%d) because " JOB_FMT
+					    " has earlier deadline "
+					    "then " JOB_FMT "\n",
+					    tsk->comm, task_pid_vnr(tsk),
+					    JOB_ARG(se->job),
+					    JOB_ARG(prev->atlas.job));
+			else
+				atlas_debug(PICK_NEXT_TASK, "'%s' (%d) because "
+							    "no other task "
+							    "available.\n",
+					    prev->comm, task_pid_vnr(prev));
+			/* choose prev again if there is no other ATLAS recover
+			 * job, or if this job has an earlier deadline. This
+			 * saves a put_prev_task()/dequeue_entity() pair, if
+			 * prev would be selected again. */
+			return prev;
+		}
+		put_prev_task(rq, prev);
+	}
 
-	/*
-	 * only proceed if there are runnable tasks
-	 */
+again:
 	if (likely(!atlas_recover_rq->nr_runnable)) {
-		//if there is no ready task, no need to set up timer
 		return NULL;
 	}
 
-	put_prev_task(rq, prev);
-
 	BUG_ON(atlas_recover_rq->curr);
-
 	se = pick_first_entity_recover(atlas_recover_rq);
+	tsk = task_of(se);
 
 	atlas_recover_rq->curr = se;
 	dequeue_entity(atlas_recover_rq, se);
 
-	
-	atlas_debug(PICK_NEXT_TASK, "p->pid=%d job->sexec=%lld job->exec=%lld", task_of(se)->pid,
-		ktime_to_ns(se->job->sexectime), ktime_to_ns(se->job->exectime));
-	
-	//update start
-    update_stats_curr_start(atlas_recover_rq, se, ktime_get()); 
+	atlas_debug(PICK_NEXT_TASK, "'%s' (%d) " JOB_FMT " to run.", tsk->comm,
+		    task_pid_vnr(tsk), JOB_ARG(se->job));
 
-	//job?
+	// update start
+	update_stats_curr_start(atlas_recover_rq, se, ktime_get());
+
+	// job?
 	if (se->job) {
-		if (ktime_zero(se->job->sexectime))
+		if (ktime_zero(se->job->sexectime)) {
 			atlas_recover_rq->pending_work |= PENDING_MOVE_TO_CFS;
-		else
-			setup_rq_timer(atlas_recover_rq, atlas_recover_rq->curr->job);
-    }
+			atlas_recover_do_pending_work(rq, tsk);
+			goto again;
+		}
 
-	return task_of(atlas_recover_rq->curr);
+		else {
+			setup_rq_timer(atlas_recover_rq,
+				       atlas_recover_rq->curr->job);
+		}
+	}
+
+	return tsk;
 }
 
 static void set_curr_task_atlas_recover(struct rq *rq)
