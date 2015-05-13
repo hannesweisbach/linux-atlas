@@ -11,11 +11,10 @@ static inline struct rq *rq_of(struct atlas_recover_rq *atlas_recover_rq)
 	return container_of(atlas_recover_rq, struct rq, atlas_recover);
 }
 
-static inline void update_stats_curr_start(struct atlas_recover_rq *atlas_recover_rq,
-			struct sched_atlas_entity *se, ktime_t now)
+static inline void update_stats_curr_start(struct rq *rq,
+					   struct sched_atlas_entity *se)
 {
-	task_of(se)->se.exec_start = rq_of(atlas_recover_rq)->clock_task;
-	se->start = now;
+	task_of(se)->se.exec_start = rq_clock_task(rq);
 }
 
 static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
@@ -339,7 +338,7 @@ pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 	atlas_debug(PICK_NEXT_TASK, "'%s' (%d) " JOB_FMT " to run.", tsk->comm,
 		    task_pid_vnr(tsk), JOB_ARG(se->job));
 
-	update_stats_curr_start(atlas_recover_rq, se, ktime_get());
+	update_stats_curr_start(rq, se);
 
 	WARN(!se->job, "SE of %s/%d has no job\n", tsk->comm,
 	     task_pid_vnr(tsk));
@@ -360,8 +359,8 @@ static void set_curr_task_atlas_recover(struct rq *rq)
 	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
 	
 	atlas_debug(SET_CURR_TASK, "pid=%d", p->pid);
-    update_stats_curr_start(atlas_recover_rq, se, ktime_get()); 
-    
+	update_stats_curr_start(rq, se);
+
     BUG_ON(rq->atlas_recover.curr);
 	rq->atlas_recover.curr = se;
 
