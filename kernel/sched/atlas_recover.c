@@ -4,8 +4,6 @@
 #include "sched.h"
 #include "atlas_common.h"
 
-#define PENDING_MOVE_TO_CFS   0x1
-
 const struct sched_class atlas_recover_sched_class;
 
 static inline struct rq *rq_of(struct atlas_recover_rq *atlas_recover_rq)
@@ -13,12 +11,6 @@ static inline struct rq *rq_of(struct atlas_recover_rq *atlas_recover_rq)
 	return container_of(atlas_recover_rq, struct rq, atlas_recover);
 }
 
-static inline int hrtimer_start_nowakeup(struct hrtimer *timer, ktime_t tim,
-		const enum hrtimer_mode mode)
-{
-	return __hrtimer_start_range_ns(timer, tim, 0, mode, 0);
-}
-   
 static inline void update_stats_curr_start(struct atlas_recover_rq *atlas_recover_rq,
 			struct sched_atlas_entity *se, ktime_t now)
 {
@@ -26,9 +18,6 @@ static inline void update_stats_curr_start(struct atlas_recover_rq *atlas_recove
 	se->start = now;
 }
 
-/*
- * handle slack time transitions
- */
 static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 {
 	struct atlas_recover_rq *atlas_recover_rq =
@@ -36,30 +25,28 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 	struct rq *rq = rq_of(atlas_recover_rq);
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&rq->lock, flags);
-
 	BUG_ON(rq->curr->sched_class != &atlas_recover_sched_class);
-	
+
 	sched_log("Timer Recover");
 
-	atlas_recover_rq->pending_work |= PENDING_MOVE_TO_CFS;
-	
+	raw_spin_lock_irqsave(&rq->lock, flags);
+
 	if (rq->curr)
 		resched_curr(rq);
-	
+
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
-	
+
 	return HRTIMER_NORESTART;
 }
 
 static inline void setup_rq_timer(struct atlas_recover_rq *atlas_recover_rq,
-		struct atlas_job *job) {
-
+				  struct atlas_job *job)
+{
 	if (unlikely(!job))
 		return;
 
-	hrtimer_start_nowakeup(&atlas_recover_rq->timer,
-			job->sexectime, HRTIMER_MODE_REL_PINNED);
+	__hrtimer_start_range_ns(&atlas_recover_rq->timer, job->sexectime, 0,
+				 HRTIMER_MODE_REL_PINNED, 0);
 }
 
 void init_atlas_recover_rq(struct atlas_recover_rq *atlas_recover_rq)
