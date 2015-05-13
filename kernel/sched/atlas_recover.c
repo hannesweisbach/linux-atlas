@@ -83,17 +83,6 @@ static void enqueue_entity(struct atlas_recover_rq *recover_rq,
 			&recover_rq->rb_leftmost_se);
 }
 
-static inline struct sched_atlas_entity *pick_first_entity_recover
-		(struct atlas_recover_rq *atlas_recover_rq)
-{
-	struct rb_node *left = atlas_recover_rq->rb_leftmost_se;
-
-	if (!left)
-		return NULL;
-
-	return rb_entry(left, struct sched_atlas_entity, run_node);
-}
-
 static void dequeue_entity(struct atlas_recover_rq *recover_rq,
 			   struct sched_atlas_entity *se)
 {
@@ -351,7 +340,10 @@ pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 	}
 
 	BUG_ON(atlas_recover_rq->curr);
-	se = pick_first_entity_recover(atlas_recover_rq);
+	BUG_ON(!atlas_recover_rq->rb_leftmost_se);
+
+	se = rb_entry(atlas_recover_rq->rb_leftmost_se,
+		      struct sched_atlas_entity, run_node);
 	tsk = task_of(se);
 
 	atlas_recover_rq->curr = se;
