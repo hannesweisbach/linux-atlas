@@ -112,6 +112,48 @@ static int entity_before(struct sched_atlas_entity *a,
 	return job_before(a->job, b->job);
 }
 
+static void enqueue_entity_(struct rb_root *root, struct sched_atlas_entity *se,
+			   struct rb_node **rb_leftmost_se)
+{
+	struct rb_node **link = &root->rb_node;
+	struct rb_node *parent = NULL;
+	struct sched_atlas_entity *entry;
+	int leftmost = 1;
+
+	RB_CLEAR_NODE(&se->run_node);
+
+	while (*link) {
+		parent = *link;
+		entry = rb_entry(parent, struct sched_atlas_entity, run_node);
+
+		if (entity_before(se, entry))
+			link = &parent->rb_left;
+		else {
+			link = &parent->rb_right;
+			leftmost = 0;
+		}
+	}
+
+	if (leftmost)
+		*rb_leftmost_se = &se->run_node;
+
+	rb_link_node(&se->run_node, parent, link);
+	rb_insert_color(&se->run_node, root);
+}
+
+static void dequeue_entity_(struct rb_root *root, struct sched_atlas_entity *se,
+			   struct rb_node **rb_leftmost_se)
+{
+	if (*rb_leftmost_se == &se->run_node) {
+		struct rb_node *next_node;
+
+		next_node = rb_next(&se->run_node);
+		*rb_leftmost_se = next_node;
+	}
+
+	rb_erase(&se->run_node, root);
+}
+
 static inline int has_execution_time_left(const struct sched_atlas_entity *se)
 {
 	return !ktime_equal(ktime_set(0, 0), se->job->sexectime);

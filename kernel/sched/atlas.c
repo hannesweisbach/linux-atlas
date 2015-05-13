@@ -106,52 +106,27 @@ static void put_job(struct atlas_job *job)
 	}
 }
 
-static void enqueue_entity(struct atlas_rq *atlas_rq,
-		struct sched_atlas_entity *se)
-{
-	struct rb_node **link = &atlas_rq->tasks_timeline.rb_node;
-	struct rb_node *parent = NULL;
-	struct sched_atlas_entity *entry;
-	int leftmost = 1;
-	
-	//FIXME?
-	RB_CLEAR_NODE(&se->run_node);
-	
-	atlas_debug(RBTREE, "enqueue_task_rb_tree");
-	while (*link) {
-		parent = *link;
-		entry = rb_entry(parent, struct sched_atlas_entity, run_node);
-		
-		if (entity_before(se, entry))
-			link = &parent->rb_left;
-		else {
-			link = &parent->rb_right;
-			leftmost = 0;
 		}
 	}
 
-	if (leftmost)
-		atlas_rq->rb_leftmost_se = &se->run_node;
-	
-	rb_link_node(&se->run_node, parent, link);
-	rb_insert_color(&se->run_node, &atlas_rq->tasks_timeline);	
+
+
+
+}
+
+static void enqueue_entity(struct atlas_rq *atlas_rq,
+			   struct sched_atlas_entity *se)
+{
+	enqueue_entity_(&atlas_rq->tasks_timeline, se,
+			&atlas_rq->rb_leftmost_se);
 }
 
 static void dequeue_entity(struct atlas_rq *atlas_rq,
-		struct sched_atlas_entity *se)
+			   struct sched_atlas_entity *se)
 {
-	atlas_debug(RBTREE, "dequeue_task_rb_tree");
-
-	if (atlas_rq->rb_leftmost_se == &se->run_node) {
-		struct rb_node *next_node;
-
-		next_node = rb_next(&se->run_node);
-		atlas_rq->rb_leftmost_se = next_node;
-	}
-	
-	rb_erase(&se->run_node, &atlas_rq->tasks_timeline);
+	dequeue_entity_(&atlas_rq->tasks_timeline, se,
+			&atlas_rq->rb_leftmost_se);
 }
-
 
 static struct atlas_job *pick_last_job(struct atlas_rq *atlas_rq) {
 	struct rb_node *last = rb_last(&atlas_rq->jobs);
