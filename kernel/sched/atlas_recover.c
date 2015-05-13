@@ -1,7 +1,13 @@
+#include <linux/kernel.h>
 #include <linux/rbtree.h>
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
+#include <linux/spinlock.h>
+#include <linux/ktime.h>
+#include <linux/bug.h>
+
 #include "sched.h"
+#include "atlas.h"
 #include "atlas_common.h"
 
 const struct sched_class atlas_recover_sched_class;
