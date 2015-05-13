@@ -783,11 +783,10 @@ static void update_stats_wait_end(struct rq *rq, struct sched_entity *se)
 	schedstat_set(se->statistics.wait_start, 0);
 }
 
-static inline void update_stats_curr_start(struct atlas_rq *atlas_rq,
+static inline void update_stats_curr_start(struct rq *rq,
 					   struct sched_atlas_entity *se)
 {
-	task_of(se)->se.exec_start = rq_clock_task(rq_of(atlas_rq));
-	se->start = ktime_get();
+	task_of(se)->se.exec_start = rq_clock_task(rq);
 }
 
 int update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
@@ -1184,7 +1183,7 @@ out:
 		atlas_debug(PICK_NEXT_TASK, "pid=%d, need_resched=%d",
 			    task_of(atlas_rq->curr)->pid,
 			    test_tsk_need_resched(task_of(atlas_rq->curr)));
-		update_stats_curr_start(atlas_rq, atlas_rq->curr);
+		update_stats_curr_start(rq, atlas_rq->curr);
 
 		if (timer)
 			start_job(atlas_rq, atlas_rq->curr->job);
@@ -1250,7 +1249,7 @@ static void set_curr_task_atlas(struct rq *rq)
 		update_stats_wait_end(rq, se);
 		dequeue_entity(atlas_rq, atlas_se);
 	}
-	update_stats_curr_start(atlas_rq, atlas_se);
+	update_stats_curr_start(rq, atlas_se);
 
 	BUG_ON(atlas_rq->curr);
 	atlas_rq->curr = atlas_se;
