@@ -64,6 +64,13 @@ void sched_log(const char *fmt, ...)
 	preempt_enable();
 }
 
+/*
+ * remember to call put_task_struct(p) after you are done
+ */
+static inline struct task_struct *task_of_job(struct atlas_job *s) {
+	return get_pid_task(s->pid, PIDTYPE_PID);
+}
+
 static inline struct atlas_job *job_alloc(struct pid *pid, uint64_t id,
 					  ktime_t deadline, ktime_t exectime)
 {
@@ -79,39 +86,58 @@ static inline struct atlas_job *job_alloc(struct pid *pid, uint64_t id,
 	job->exectime = job->sexectime = exectime;
 	job->id = id;
 
-	atomic_set(&job->count, 1);
-
 out:
 	return job;
 }
 
-static inline struct atlas_job *get_job
-	(struct atlas_job  *job)
+static inline void job_dealloc(struct atlas_job *job)
 {
-	if (job)
-		atomic_inc(&job->count);
-	return job;
-}
+	struct task_struct *tsk;
+	struct sched_atlas_entity *atlas_se;
 
-
-static void put_job(struct atlas_job *job)
-{
 	if (!job)
 		return;
 
-	if (atomic_dec_and_test(&job->count)) {
-		//printk_deferred("free job=%p\n", job);
-		put_pid(job->pid);
-		kfree(job);
-	}
-}
+	tsk = task_of_job(job);
+	atlas_se = &tsk->atlas;
 
+	{ /* check job list */
+		struct atlas_job *pos;
+		list_for_each_entry(pos, &atlas_se->jobs, list)
+		{
+			WARN(pos == job, JOB_FMT " is still in job list",
+			     JOB_ARG(job));
 		}
 	}
+	{ /* check rq rb tree */
 
+		struct rq *rq = task_rq(tsk);
+		struct atlas_rq *atlas_rq = &rq->atlas;
 
+		struct rb_node *node;
+		struct atlas_job *pos = NULL;
+		for (node = rb_first(&atlas_rq->jobs); node;
+		     node = rb_next(&pos->rb_node)) {
+			pos = rb_entry(node, struct atlas_job, rb_node);
+			WARN(job == pos, JOB_FMT " is still in rb tree",
+			     JOB_ARG(job));
+		}
 
+		WARN(job == atlas_rq->cfs_job,
+		     JOB_FMT " is referenced by 'cfs_job'", JOB_ARG(job));
+	}
 
+	put_task_struct(tsk);
+
+	WARN(!RB_EMPTY_NODE(&job->rb_node), JOB_FMT " is not empty",
+	     JOB_ARG(job));
+
+	WARN(job->list.next != LIST_POISON1, JOB_FMT " has next pointer",
+	     JOB_ARG(job));
+	WARN(job->list.prev != LIST_POISON2, JOB_FMT " has prev pointer",
+	     JOB_ARG(job));
+	put_pid(job->pid);
+	kfree(job);
 }
 
 static void enqueue_entity(struct atlas_rq *atlas_rq,
@@ -148,13 +174,6 @@ static struct atlas_job *pick_prev_job(struct atlas_job *s) {
 
 static inline int job_in_rq(struct atlas_job *s) {
 	return !RB_EMPTY_NODE(&s->rb_node);
-}
-
-/*
- * remember to call put_task_struct(p) after you are done
- */
-static inline struct task_struct *task_of_job(struct atlas_job *s) {
-	return get_pid_task(s->pid, PIDTYPE_PID);
 }
 
 static inline int in_slacktime(struct atlas_rq *atlas_rq) {
@@ -535,7 +554,6 @@ static void debug_task(struct task_struct *p) {
  * must be called with lock hold
  */
 /*
- * caller is responsible for calling put_job(job) when done
  */
 static struct atlas_job *pop_task_job(struct sched_atlas_entity *se)
 {
@@ -612,7 +630,6 @@ void erase_task_job(struct atlas_job *s) {
 	if (unlikely(!s))
 		return;
 	list_del(&s->list);
-	put_job(s);
 }
 
 
@@ -1441,9 +1458,6 @@ static void assign_rq_job(struct atlas_rq *atlas_rq,
 	
 	rb_link_node(&job->rb_node, parent, link);
 	rb_insert_color(&job->rb_node, &atlas_rq->jobs);	
-	
-	//save reference
-	get_job(job);
 
 	/* fix the scheduled deadline of the new job*/
 	next = pick_next_job(job);
@@ -1527,7 +1541,6 @@ void erase_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job)
 		rb_erase(&job->rb_node, &atlas_rq->jobs);
 		RB_CLEAR_NODE(&job->rb_node);
 		job->sexectime = tmp;
-		put_job(job);
 	}	
 
 	check_admission_plan(atlas_rq);
@@ -1742,7 +1755,7 @@ SYSCALL_DEFINE0(atlas_next)
 	if (unlikely(se->real_job != se->job))
 	{
 		// remove old job
-		put_job(se->real_job);
+		job_dealloc(se->real_job);
 
 		// update real job
 		se->real_job = next_job;
@@ -1751,7 +1764,7 @@ SYSCALL_DEFINE0(atlas_next)
 	} else
 	{
 		//remove old job
-		put_job(se->job);
+		job_dealloc(se->real_job);
 
 		se->job = se->real_job = next_job;
 		se->flags &= ~ATLAS_PENDING_JOBS;
