@@ -122,14 +122,12 @@ size_t print_atlas_job(const struct atlas_job const *job, char *buf,
 	}
 	else {
 		return scnprintf(buf, size,
-				 "JOBS: %6lld - %6lld (%6lld - %6lld) (%p, "
-				 "ref=%d)\n",
+				 "JOBS: %6lld - %6lld (%6lld - %6lld) (%p)\n",
 				 ktime_to_ms(ktime_sub(job->sdeadline,
 						       job->sexectime)),
 				 ktime_to_ms(job->sdeadline),
 				 ktime_to_ms(ktime_sub(job->deadline,
 						       job->exectime)),
-				 atomic_read(&job->count));
 				 ktime_to_ms(job->deadline), job);
 	}
 }
