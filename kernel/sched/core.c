@@ -2133,6 +2133,25 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	INIT_LIST_HEAD(&p->rt.run_list);
 
 #ifdef CONFIG_ATLAS
+	if (unlikely(p->policy == SCHED_ATLAS ||
+		     p->policy == SCHED_ATLAS_RECOVER)) {
+		WARN_ONCE(1, "Forking ATLAS tasks requires "
+			     "SCHED_FLAG_RESET_ON_FORK to be set. Setting "
+			     "now.");
+/*
+ * Reset hard to SCHED_NORMAL. sched_reset_on_fork does not work for
+ * SCHED_ATLAS_RECOVER, because it is not considered a RT scheduling policy,
+ * and only RT sched policies cause a reset to SCHED_NORMAL.
+ */
+#if 0
+		p->sched_reset_on_fork = 1;
+#else
+		p->policy = SCHED_NORMAL;
+		p->static_prio = NICE_TO_PRIO(0);
+		p->rt_priority = 0;
+#endif
+	}
+
 	RB_CLEAR_NODE(&p->atlas.run_node);
 	INIT_LIST_HEAD(&p->atlas.list);
 	p->atlas.state = ATLAS_UNDEF;
@@ -2230,26 +2249,11 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	 */
 	p->prio = current->normal_prio;
 
-#if CONFIG_ATLAS
-	if (unlikely(p->policy == SCHED_ATLAS ||
-		     p->policy == SCHED_ATLAS_RECOVER)) {
-		WARN_ONCE(1, "Forking ATLAS tasks requires "
-			     "SCHED_FLAG_RESET_ON_FORK to be set. Setting "
-			     "now.");
-		p->sched_reset_on_fork = 1;
-	}
-#endif
-
 	/*
 	 * Revert to default priority/policy on fork if requested.
 	 */
 	if (unlikely(p->sched_reset_on_fork)) {
-#ifndef CONFIG_ATLAS
 		if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
-#else
-		if (task_has_dl_policy(p) || task_has_rt_policy(p) ||
-				unlikely(p->policy == SCHED_ATLAS)) {
-#endif
 			p->policy = SCHED_NORMAL;
 			p->static_prio = NICE_TO_PRIO(0);
 			p->rt_priority = 0;
