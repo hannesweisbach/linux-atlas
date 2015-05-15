@@ -150,10 +150,9 @@ static void enqueue_task_atlas_recover(struct rq *rq, struct task_struct *p, int
 {
 	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
 	struct sched_atlas_entity *se = &p->atlas;
-		
-	atlas_debug(ENQUEUE, "p->pid=%d job->sexec=%lld job->exec=%lld", p->pid,
-		se->job ? ktime_to_ns(se->job->sexectime) : -1, se->job ? ktime_to_ns(se->job->exectime) : -1);
-		
+
+	atlas_debug(ENQUEUE, JOB_FMT, JOB_ARG(se->job));
+
 	if (atlas_recover_rq->curr != se)
 		enqueue_entity(atlas_recover_rq, se);
     
@@ -171,10 +170,9 @@ static void dequeue_task_atlas_recover(struct rq *rq, struct task_struct *p, int
 {
 	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
 	struct sched_atlas_entity *se = &p->atlas;
-	
-	atlas_debug(DEQUEUE, "p->pid=%d job->sexec=%lld job->exec=%lld", p->pid,
-		se->job ? ktime_to_ns(se->job->sexectime) : -1, se->job ? ktime_to_ns(se->job->exectime) : -1);
-	
+
+	atlas_debug(DEQUEUE, JOB_FMT, JOB_ARG(se->job));
+
 	update_curr_atlas_recover(rq);
 
     if (atlas_recover_rq->curr == se)
