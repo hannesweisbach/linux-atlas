@@ -318,7 +318,6 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 		case ATLAS_JOB:
 			atlas_debug_(TIMER, "JOB");
 			BUG_ON(rq->curr->sched_class != &atlas_sched_class);
-			atlas_rq->pending_work |= PENDING_JOB_TIMER;
 			break;
 		case ATLAS_SLACK:
 			add_nr_running(rq, 1);
@@ -675,46 +674,14 @@ static void atlas_do_pending_work(struct rq *rq, struct task_struct *prev)
 			advance_thread_in_cfs(atlas_rq);
 	}
 
-	if (test_and_clear_bit(PENDING_JOB_TIMER, &atlas_rq->pending_work)) {
-		/* deadline miss or execution time overrun */
-		
-		struct sched_atlas_entity *se = &prev->atlas;
-		
-		if (ktime_cmp(se->job->sexectime, ktime_set(0,30000)) <= 0) {
-			se->flags |= ATLAS_EXECTIME;
-			atlas_debug_(PENDING_WORK,
-				    "Execution time overrun for " JOB_FMT,
-				    JOB_ARG(prev->atlas.job));
-			atlas_set_scheduler(rq, prev, SCHED_NORMAL);
-		} 
+	BUG_ON(test_and_clear_bit(PENDING_JOB_TIMER, &atlas_rq->pending_work));
 
-		else {
-			atlas_debug_(PENDING_WORK, "Deadline miss for " JOB_FMT,
-				    JOB_ARG(prev->atlas.job));
-			atlas_set_scheduler(rq, prev, SCHED_ATLAS_RECOVER);
-		}
-	}
-
-	if (test_and_clear_bit(PENDING_MOVE_TO_CFS, &atlas_rq->pending_work)) {
-		atlas_debug_(PENDING_WORK, "Move " JOB_FMT " to CFS",
-			    JOB_ARG(prev->atlas.job));
-		atlas_set_scheduler(rq, prev, SCHED_NORMAL);
-	}
-
-	if (test_and_clear_bit(PENDING_MOVE_TO_RECOVER,
-			       &atlas_rq->pending_work)) {
-		atlas_debug_(PENDING_WORK, "Move " JOB_FMT " to ATLAS-Recover",
-			    JOB_ARG(prev->atlas.job));
-		atlas_set_scheduler(rq, prev, SCHED_ATLAS_RECOVER);
-	}
-
-	if (test_and_clear_bit(PENDING_MOVE_TO_ATLAS,
-			       &atlas_rq->pending_work)) {
-		atlas_debug_(PENDING_WORK, "Move " JOB_FMT " to ATLAS",
-			    JOB_ARG(atlas_rq->move_to_atlas->atlas.job));
-		atlas_set_scheduler(rq, atlas_rq->move_to_atlas, SCHED_ATLAS);
-		atlas_rq->move_to_atlas = NULL;
-	}
+	BUG_ON(test_and_clear_bit(PENDING_MOVE_TO_CFS,
+				  &atlas_rq->pending_work));
+	BUG_ON(test_and_clear_bit(PENDING_MOVE_TO_RECOVER,
+				  &atlas_rq->pending_work));
+	BUG_ON(test_and_clear_bit(PENDING_MOVE_TO_ATLAS,
+				  &atlas_rq->pending_work));
 }
 
 /*******************************************************
@@ -745,7 +712,6 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->cfs_job_start = ktime_set(0, 0);
 
 	atlas_rq->advance_in_cfs = NULL;
-	atlas_rq->move_to_atlas = NULL;
 	atlas_rq->skip_update_curr = 0;
 }
 
@@ -990,6 +956,7 @@ preempt:
 
 static int get_slacktime(struct atlas_rq *atlas_rq, ktime_t *slack);
 static void cleanup_rq(struct atlas_rq *atlas_rq);
+static void cleanup_rq_(struct atlas_rq *atlas_rq);
 static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev);
 
 static struct task_struct *pick_next_task_atlas(struct rq *rq,
@@ -1003,6 +970,8 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	unsigned long flags;
 	int timer = 1;
 	int need_put = 1;
+
+	cleanup_rq_(atlas_rq);
 
 	if (unlikely(rq->atlas.pending_work))
 		atlas_do_pending_work(rq, prev);
@@ -1065,27 +1034,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 	
 	/*
-	 * remove jobs having a deadline in the past
-	 */
-	cleanup_rq(atlas_rq);
-		
-	/*
-	 * job of se might be removed by cleanup
-	 */
-	if (unlikely(!job_in_rq(se->job))) {
-		if (has_execution_time_left(se)) {
-			atlas_rq->pending_work |= PENDING_MOVE_TO_CFS;
-		}
-		else {
-			atlas_rq->pending_work |= PENDING_MOVE_TO_RECOVER;
-		}
-		atlas_rq->curr = se;
-		dequeue_entity(atlas_rq, se);
-
-		goto unlock_out;
-	}
-
-	/*
 	 * handle slack time
 	 */
 	if (get_slacktime(atlas_rq, &slack))
@@ -1133,9 +1081,8 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 
 		se = &p->atlas;
 
-		atlas_rq->move_to_atlas = p;
-		atlas_rq->pending_work |= PENDING_MOVE_TO_ATLAS;
-			
+		atlas_set_scheduler(rq, p, SCHED_ATLAS);
+
 		BUG_ON(in_interrupt());
 
 		/* only accessed with preemption disabled */
@@ -1579,6 +1526,46 @@ static void cleanup_rq(struct atlas_rq *atlas_rq)
 		erase_rq_job(atlas_rq, curr);
 		curr = next;
 	}
+}
+
+static void cleanup_rq_(struct atlas_rq *atlas_rq)
+{
+	unsigned long flags;
+	struct atlas_job *curr = pick_first_job(atlas_rq);
+	ktime_t now = ktime_get();
+
+	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+
+	while (curr && unlikely(job_missed_deadline(curr, now))) {
+		struct atlas_job *next = pick_next_job(curr);
+		atlas_debug(RUNQUEUE, "Removing " JOB_FMT " from the RQ",
+			    JOB_ARG(curr));
+		erase_rq_job(atlas_rq, curr);
+		{
+			/*
+			 * if task of curr is still in ATLAS
+			 * . put in ATLAS-Recover if sexectime > 0
+			 * . put in CFS otherwise
+			 */
+			struct task_struct *tsk = curr->tsk;
+			if (tsk->policy == SCHED_ATLAS) {
+				raw_spin_unlock_irqrestore(&atlas_rq->lock,
+							   flags);
+				if (ktime_compare(curr->sexectime,
+						  ktime_set(0, 30000)) <= 0)
+					atlas_set_scheduler(
+							task_rq(tsk), tsk,
+							SCHED_ATLAS_RECOVER);
+				else
+					atlas_set_scheduler(task_rq(tsk), tsk,
+							    SCHED_NORMAL);
+				raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+			}
+		}
+		curr = next;
+	}
+
+	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 }
 
 /* 
