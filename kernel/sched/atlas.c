@@ -64,15 +64,8 @@ void sched_log(const char *fmt, ...)
 	preempt_enable();
 }
 
-/*
- * remember to call put_task_struct(p) after you are done
- */
-static inline struct task_struct *task_of_job(struct atlas_job *s) {
-	return get_pid_task(s->pid, PIDTYPE_PID);
-}
-
-static inline struct atlas_job *job_alloc(struct pid *pid, uint64_t id,
-					  ktime_t deadline, ktime_t exectime)
+static inline struct atlas_job *job_alloc(uint64_t id, ktime_t deadline,
+					  ktime_t exectime)
 {
 	struct atlas_job *job = kzalloc(sizeof(struct atlas_job), GFP_KERNEL);
 	if (!job) {
@@ -81,7 +74,6 @@ static inline struct atlas_job *job_alloc(struct pid *pid, uint64_t id,
 
 	INIT_LIST_HEAD(&job->list);
 	RB_CLEAR_NODE(&job->rb_node);
-	job->pid = pid;
 	job->deadline = job->sdeadline = deadline;
 	job->exectime = job->sexectime = exectime;
 	job->id = id;
@@ -92,14 +84,12 @@ out:
 
 static inline void job_dealloc(struct atlas_job *job)
 {
-	struct task_struct *tsk;
 	struct sched_atlas_entity *atlas_se;
 
 	if (!job)
 		return;
 
-	tsk = task_of_job(job);
-	atlas_se = &tsk->atlas;
+	atlas_se = &job->tsk->atlas;
 
 	{ /* check job list */
 		struct atlas_job *pos;
@@ -111,7 +101,7 @@ static inline void job_dealloc(struct atlas_job *job)
 	}
 	{ /* check rq rb tree */
 
-		struct rq *rq = task_rq(tsk);
+		struct rq *rq = task_rq(job->tsk);
 		struct atlas_rq *atlas_rq = &rq->atlas;
 
 		struct rb_node *node;
@@ -127,8 +117,6 @@ static inline void job_dealloc(struct atlas_job *job)
 		     JOB_FMT " is referenced by 'cfs_job'", JOB_ARG(job));
 	}
 
-	put_task_struct(tsk);
-
 	WARN(!RB_EMPTY_NODE(&job->rb_node), JOB_FMT " is not empty",
 	     JOB_ARG(job));
 
@@ -136,7 +124,6 @@ static inline void job_dealloc(struct atlas_job *job)
 	     JOB_ARG(job));
 	WARN(job->list.prev != LIST_POISON2, JOB_FMT " has prev pointer",
 	     JOB_ARG(job));
-	put_pid(job->pid);
 	kfree(job);
 }
 
@@ -1133,16 +1120,10 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	BUG_ON(job_next == NULL);
 	while (job != job_next) {
 		
-		p = task_of_job(job_next);
-		
-		if (!p) {
-			job_next = pick_next_job(job_next);
-			continue;
-		}
+		p = job_next->tsk;
 		
 		/* job blocked? */
 		if (!p->on_rq) {
-			put_task_struct(p);
 			job_next = pick_next_job(job_next);
 			continue;
 		}
@@ -1161,7 +1142,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		se->job = job_next;
 		se->flags |= ATLAS_PENDING_JOBS;
 
-		put_task_struct(p);
 		goto unlock_out;
 	}
 	
@@ -1862,7 +1842,6 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 	struct timeval lexectime;
 	struct timeval ldeadline;
 	struct atlas_job *job = NULL;
-	struct task_struct *t;
 	struct pid *pidp;
 	ktime_t kdeadline;
 	struct atlas_rq *atlas_rq;
@@ -1898,18 +1877,18 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 		return -ESRCH;
 	}
 
-	job = job_alloc(pidp, id, kdeadline, timeval_to_ktime(lexectime));
+	job = job_alloc(id, kdeadline, timeval_to_ktime(lexectime));
 	if (!job) {
 		atlas_debug_(SYS_SUBMIT, "Could not allocate job structure.");
 		return -ENOMEM;
 	}
 
 	rcu_read_lock();
-	t = pid_task(pidp, PIDTYPE_PID);
-	BUG_ON(!t);
-	assign_task_job(t, job);
+	job->tsk = pid_task(pidp, PIDTYPE_PID);
+	BUG_ON(!job->tsk);
+	assign_task_job(job->tsk, job);
 
-	atlas_rq = &task_rq(t)->atlas;
+	atlas_rq = &task_rq(job->tsk)->atlas;
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 
 	assign_rq_job(atlas_rq, job);
@@ -1919,7 +1898,7 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 	rcu_read_unlock();
 
 	atlas_debug_(SYS_SUBMIT, JOB_FMT " for Task '%s' (%d)", JOB_ARG(job),
-		     t->comm, pid);
+		     job->tsk->comm, pid);
 
 	return 0;
 }
