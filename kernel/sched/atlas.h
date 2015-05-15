@@ -12,7 +12,7 @@
 struct atlas_job {
 	struct list_head list;
 	struct rb_node rb_node;
-	struct pid *pid;  //used to map submission -> map AND to distinguish task and gap
+	struct task_struct *tsk;
 	ktime_t exectime; //relative
 	ktime_t deadline; //absolut
 	ktime_t sdeadline;
