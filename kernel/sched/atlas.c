@@ -1743,9 +1743,6 @@ SYSCALL_DEFINE0(atlas_next)
 			BUG_ON(atlas_rq->timer_target != ATLAS_SLACK && !(atlas_rq->pending_work & PENDING_STOP_CFS_ADVANCED));
 			reset_timer(atlas_rq);
 		} else {
-			atlas_debug_(SYS_NEXT, "Switching to ATLAS");
-			if (current->policy != SCHED_ATLAS)
-				atlas_set_scheduler(rq, current, SCHED_ATLAS);
 		}
 	} /* else
 		atlas_switch_scheduler(rq, current, &fair_sched_class); */
@@ -1797,19 +1794,34 @@ out_timer:
 	set_tsk_need_resched(current);
 	
 
-	/*
-	 * setup new timer
-	 * if the deadline has already passed, the callback will be called
-	 * resulting in a scheduler switch to CFS
-	 */
 	atlas_debug_(SYS_NEXT,
 		     "Returning with " JOB_FMT "/" JOB_FMT
 		     " for Task '%s' (%d') and Job timer set to %lldms",
 		     JOB_ARG(se->real_job), JOB_ARG(se->job), current->comm,
 		     task_pid_vnr(current),
 		     ktime_to_ms(se->real_job->deadline));
-	hrtimer_start(&se->timer, se->real_job->deadline, HRTIMER_MODE_ABS_PINNED);
 	
+	/*
+	 * Switch to ATLAS, if we have a job whose deadline has not been
+	 * missed.
+	 */
+	raw_spin_lock_irqsave(&rq->lock, flags);
+	if (current->policy != SCHED_ATLAS &&
+	    !job_missed_deadline(current->atlas.real_job, ktime_get())) {
+		atlas_debug_(SYS_NEXT, "Switching to ATLAS");
+		atlas_set_scheduler(rq, current, SCHED_ATLAS);
+	}
+	raw_spin_unlock_irqrestore(&rq->lock, flags);
+
+	/*
+	 * The se-timer causes SIGXCPU to be delivered to userspace. If deadline
+	 * has alredy been missed, the timer callback is executed
+	 * instantaneously. SIGXCPU needs to be delivered irrespective of the
+	 * current policy of this task.
+	 */
+	hrtimer_start(&se->timer, se->real_job->deadline,
+		      HRTIMER_MODE_ABS_PINNED);
+
 	sched_log("NEXT pid=%d job=%p", current->pid, current->atlas.job);
 
 	preempt_enable();
