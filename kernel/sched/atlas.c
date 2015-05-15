@@ -175,18 +175,9 @@ static inline int ktime_neg(ktime_t a) {
 	return ktime_to_ns(a) < 0;
 }
 
-static inline int ktime_cmp(ktime_t a, ktime_t b) {
-	s64 tmp = ktime_to_ns(ktime_sub(a, b));
-	if (tmp > 0)
-		return 1;
-	else if (tmp == 0)
-		return 0;
-	else
-		return -1;
-}
-
-static inline int job_missed_deadline(struct atlas_job *s, ktime_t now) {
-	return ktime_cmp(s->deadline, now) <= 0;
+static inline int job_missed_deadline(struct atlas_job *s, ktime_t now)
+{
+	return ktime_compare(s->deadline, now) <= 0;
 }
 
 static inline struct rq *rq_of(struct atlas_rq *atlas_rq)
@@ -936,8 +927,8 @@ static void check_preempt_curr_atlas(struct rq *rq, struct task_struct *p, int f
 	/* if the currently running task has no job, don't preempt */
 	if (unlikely(!sub))
 		goto no_preempt;
-		
-	if (ktime_cmp(pse->job->sdeadline, se->job->sdeadline) == -1)
+
+	if (ktime_compare(pse->job->sdeadline, se->job->sdeadline) < 0)
 		goto preempt;
 	
 no_preempt:
@@ -1238,14 +1229,10 @@ static int select_task_rq_atlas(struct task_struct *p, int prev_cpu,
  * Methods to maintain job tree.
  */
 
-static inline int is_collision(struct atlas_job *a, struct atlas_job *b) {
-	ktime_t b_start = job_start(b);
-	ktime_t a_end = a->sdeadline;
-	if (ktime_cmp(a_end, b_start) == 1) {
-		//end > start
-		return 1;
-	}
-	return 0;
+static inline int is_collision(struct atlas_job *a, struct atlas_job *b)
+{
+	/* b starts before a finishes. */
+	return ktime_compare(a->sdeadline, job_start(b)) > 0;
 }
 
 static void check_admission_plan(struct atlas_rq *atlas_rq) {
@@ -1440,8 +1427,9 @@ static void assign_rq_job(struct atlas_rq *atlas_rq,
 	 * reset slack time iff start moved to the left
 	 *   - we have to initiate a reschedule on the target cpu
 	 */
-	if (first && ktime_cmp(job_start(first),
-			job_start(pick_first_job(atlas_rq))) == 1) {
+	if (first &&
+	    ktime_compare(job_start(first),
+			  job_start(pick_first_job(atlas_rq))) > 0) {
 		resched_cpu(cpu_of(rq_of(atlas_rq)));
 	}
 
