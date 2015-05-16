@@ -191,7 +191,6 @@ extern struct task_group root_task_group;
 		.flags = 0,                                                    \
 		.jobs = LIST_HEAD_INIT(tsk.atlas.jobs),                        \
 		.job = NULL,                                                   \
-		.real_job = NULL,                                              \
 		.jobs_lock = __SPIN_LOCK_UNLOCKED(tsk.atlas.jobs_lock),        \
 	},
 #else
