@@ -527,6 +527,19 @@ static void debug_task(struct task_struct *p) {
 }
 #endif /* ATLAS_DEBUG */
 
+static struct atlas_job *first_job(struct sched_atlas_entity *se)
+{
+	struct atlas_job *job = NULL;
+	unsigned long flags;
+	spin_lock_irqsave(&se->jobs_lock, flags);
+	if (!list_empty(&se->jobs)) {
+		struct list_head *elem = se->jobs.next;
+		job = list_entry(elem, struct atlas_job, list);
+	}
+	spin_unlock_irqrestore(&se->jobs_lock, flags);
+	return job;
+}
+
 /*
  * must be called with lock hold
  */
@@ -1665,7 +1678,6 @@ enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer)
 SYSCALL_DEFINE0(atlas_next)
 {
 	int ret = 0;
-	struct atlas_job *next_job;
 	struct sched_atlas_entity *se = &current->atlas;
 	struct rq *rq;
 	struct atlas_rq *atlas_rq;
@@ -1695,61 +1707,45 @@ SYSCALL_DEFINE0(atlas_next)
 		update_rq_clock(rq);
 		update_curr_atlas(rq);
 	}
-	
-	//clean up
-	if (se->real_job) {
-		raw_spin_lock(&atlas_rq->lock);
-		erase_rq_job(atlas_rq, se->real_job);
-		raw_spin_unlock(&atlas_rq->lock);
+
+	// clean up
+	if (se->job) {
+		unsigned long flags;
+
+		if (likely(job_in_rq(se->job)))
+			se->flags |= ATLAS_PENDING_JOBS;
+		else
+			se->flags &= ~ATLAS_PENDING_JOBS;
+
+		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+		atlas_debug_(SYS_NEXT, "Task '%s' finished " JOB_FMT " at "
+				       "%lld under %s",
+			     current->comm, JOB_ARG(se->job),
+			     ktime_to_ms(ktime_get()),
+			     sched_name(current->policy));
+		erase_rq_job(atlas_rq, se->job);
+		job_dealloc(pop_task_job(se));
+		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 	}
-	
-	//get new job
-	next_job = pop_task_job(se);
-	
-	if (unlikely(se->real_job != se->job))
-	{
-		// remove old job
-		job_dealloc(se->real_job);
 
-		// update real job
-		se->real_job = next_job;
-		se->flags |= ATLAS_PENDING_JOBS;
-	
-	} else
-	{
-		//remove old job
-		job_dealloc(se->real_job);
+	atlas_debug_(SYS_NEXT, "Job:  " JOB_FMT, JOB_ARG(se->job));
+	se->job = first_job(se);
+	atlas_debug_(SYS_NEXT, "Next: " JOB_FMT, JOB_ARG(se->job));
 
-		se->job = se->real_job = next_job;
-		se->flags &= ~ATLAS_PENDING_JOBS;
-	}
-	
-
-	if (se->job == se->real_job) {
-		if (atlas_rq->advance_in_cfs == current) {
-			BUG_ON(!(current->atlas.flags & ATLAS_CFS_ADVANCED));
-			BUG_ON(atlas_rq->timer_target != ATLAS_SLACK && !(atlas_rq->pending_work & PENDING_STOP_CFS_ADVANCED));
-			reset_timer(atlas_rq);
-		} else {
-		}
-	} /* else
-		atlas_switch_scheduler(rq, current, &fair_sched_class); */
-	
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 
-	if (se->real_job)
+	if (se->job)
 		goto out_timer;
-		
+
 	preempt_enable();
 	se->state = ATLAS_BLOCKED;
-	
 
 	for(;;) {
 		atlas_debug(SYS_NEXT, "Start waiting");
 		set_current_state(TASK_INTERRUPTIBLE);
 		
 		//we are aware of the lost update problem
-		if ((se->job = se->real_job = pop_task_job(se)))
+		if ((se->job = first_job(se)))
 		{
 			break;
 		}
@@ -1780,22 +1776,19 @@ SYSCALL_DEFINE0(atlas_next)
 out_timer:
 
 	set_tsk_need_resched(current);
-	
 
-	atlas_debug_(SYS_NEXT,
-		     "Returning with " JOB_FMT "/" JOB_FMT
-		     " for Task '%s' (%d') and Job timer set to %lldms",
-		     JOB_ARG(se->real_job), JOB_ARG(se->job), current->comm,
-		     task_pid_vnr(current),
-		     ktime_to_ms(se->real_job->deadline));
-	
+	atlas_debug_(SYS_NEXT, "Returning with " JOB_FMT
+			       " for Task '%s' and Job timer set to %lldms",
+		     JOB_ARG(se->job), current->comm,
+		     ktime_to_ms(se->job->deadline));
+
 	/*
 	 * Switch to ATLAS, if we have a job whose deadline has not been
 	 * missed.
 	 */
 	raw_spin_lock_irqsave(&rq->lock, flags);
 	if (current->policy != SCHED_ATLAS &&
-	    !job_missed_deadline(current->atlas.real_job, ktime_get())) {
+	    !job_missed_deadline(current->atlas.job, ktime_get())) {
 		atlas_debug_(SYS_NEXT, "Switching to ATLAS");
 		atlas_set_scheduler(rq, current, SCHED_ATLAS);
 	}
@@ -1807,7 +1800,7 @@ out_timer:
 	 * instantaneously. SIGXCPU needs to be delivered irrespective of the
 	 * current policy of this task.
 	 */
-	hrtimer_start(&se->timer, se->real_job->deadline,
+	hrtimer_start(&se->timer, se->job->deadline,
 		      HRTIMER_MODE_ABS_PINNED);
 
 	sched_log("NEXT pid=%d job=%p", current->pid, current->atlas.job);
