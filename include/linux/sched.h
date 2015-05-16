@@ -1284,7 +1284,7 @@ struct sched_atlas_entity {
 	unsigned int on_recover_rq;
 	// struct atlas_rq    *atlas_rq; //needed?
 
-	struct atlas_job *job, *real_job;
+	struct atlas_job *job;
 	struct list_head jobs;
 	spinlock_t jobs_lock;
 
