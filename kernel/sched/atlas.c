@@ -172,10 +172,6 @@ static inline ktime_t ktime_min(ktime_t a, ktime_t b) {
 	return ns_to_ktime(min(ktime_to_ns(a), ktime_to_ns(b)));
 }
 
-static inline int ktime_neg(ktime_t a) {
-	return ktime_to_ns(a) < 0;
-}
-
 static inline int job_missed_deadline(struct atlas_job *s, ktime_t now)
 {
 	return ktime_compare(s->deadline, now) <= 0;
@@ -738,27 +734,25 @@ static inline void update_stats_curr_start(struct rq *rq,
 	task_of(se)->se.exec_start = rq_clock_task(rq);
 }
 
-int update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
-			  ktime_t delta_exec)
+void update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
+			   ktime_t delta_exec)
 {
-
-	int ret = 0;
-
 	assert_raw_spin_locked(&atlas_rq->lock);
 
-	job->exectime = ktime_sub(job->exectime, delta_exec);
-
-	if (unlikely(ktime_neg(job->exectime))) {
+	/* sexectime <= exectime; if exectime is less than, sexectime is also
+	 * less than.
+	 */
+	if (unlikely(ktime_compare(job->exectime, delta_exec) < 0)) {
 		job->exectime = ktime_set(0, 0);
 		job->sexectime = ktime_set(0, 0);
-		ret = 1;
 		goto out;
-	}
-
-	job->sexectime = ktime_sub(job->sexectime, delta_exec);
-	if (ktime_neg(job->sexectime)) {
-		job->sexectime = ktime_set(0, 0);
-		ret = 2;
+	} else {
+		job->exectime = ktime_sub(job->exectime, delta_exec);
+		if (ktime_compare(job->sexectime, delta_exec) < 0) {
+			job->sexectime = ktime_set(0, 0);
+		} else {
+			job->sexectime = ktime_sub(job->sexectime, delta_exec);
+		}
 	}
 
 out:
@@ -766,8 +760,6 @@ out:
 	close_gaps(job, NO_UPDATE_EXEC_TIME);
 
 	check_admission_plan(atlas_rq);
-
-	return ret;
 }
 
 static void update_curr_atlas(struct rq *rq)
