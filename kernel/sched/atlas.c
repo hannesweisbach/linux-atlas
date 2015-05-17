@@ -5,6 +5,7 @@
 #include <linux/ktime.h>
 #include <linux/sched/atlas.h>
 #include <linux/sched.h>
+#include <linux/list.h>
 
 #include "sched.h"
 #include "atlas.h"
@@ -561,40 +562,35 @@ static struct atlas_job *first_job(struct sched_atlas_entity *se)
 {
 	struct atlas_job *job = NULL;
 	unsigned long flags;
+
 	spin_lock_irqsave(&se->jobs_lock, flags);
-	if (!list_empty(&se->jobs)) {
-		struct list_head *elem = se->jobs.next;
-		job = list_entry(elem, struct atlas_job, list);
-	}
+	job = list_first_entry_or_null(&se->jobs, struct atlas_job, list);
 	spin_unlock_irqrestore(&se->jobs_lock, flags);
+
 	return job;
 }
 
 /*
  * must be called with lock hold
  */
-/*
- */
 static struct atlas_job *pop_task_job(struct sched_atlas_entity *se)
 {
 	unsigned long flags;
-	struct atlas_job *s = NULL;
-	struct list_head *elem;
+	struct atlas_job *job = NULL;
 
 	spin_lock_irqsave(&se->jobs_lock, flags);
 
 	if (list_empty(&se->jobs))
 		goto out;
-	
-	elem = se->jobs.next;
-	s = list_entry(elem, struct atlas_job, list);
-	list_del(elem);
+
+	job = list_first_entry(&se->jobs, struct atlas_job, list);
+	list_del(&job->list);
 out:
 	spin_unlock_irqrestore(&se->jobs_lock, flags);
-	return s;
+	return job;
 }
 
-/* 
+/*
  * must be called with rcu_read_lock hold
  */
 static void assign_task_job(struct task_struct *p, struct atlas_job *job)
