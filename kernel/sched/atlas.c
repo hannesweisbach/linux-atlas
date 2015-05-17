@@ -211,10 +211,34 @@ static inline void __setup_rq_timer(struct atlas_rq *atlas_rq, ktime_t ktime) {
 	hrtimer_start_nowakeup(&atlas_rq->timer, ktime, HRTIMER_MODE_ABS_PINNED);
 }
 
+/*
+ * Helpers, to make sure during slack we decrement nr_running properly.
+ * Because an enqueue due to scheduler switch (does not have WAKING/WAKEUP flag)
+ * can increase nr_unnable/nr_running, it is necessary to track the number of
+ * previously runnable ATLAS tasks, so that we can properly add/subtract them.
+ */
+static void account_running_slack_start(struct atlas_rq *atlas_rq)
+{
+	BUG_ON(atlas_rq->in_slack);
+	sub_nr_running(rq_of(atlas_rq), atlas_rq->nr_runnable);
+	atlas_rq->in_slack = atlas_rq->nr_runnable;
+	atlas_rq->nr_runnable = 0;
+}
+
+static void account_running_slack_stop(struct atlas_rq *atlas_rq)
+{
+	atlas_rq->nr_runnable += atlas_rq->in_slack;
+	add_nr_running(rq_of(atlas_rq), atlas_rq->in_slack);
+	atlas_rq->in_slack = 0;
+}
+
 static inline void start_slack(struct atlas_rq *atlas_rq, ktime_t slack) {
 	atlas_debug(TIMER, "Setup timer for slack");
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 	slack = ktime_add(slack, ktime_get());
+
+	account_running_slack_start(atlas_rq);
+
 	atlas_rq->timer_target = ATLAS_SLACK;
 	__setup_rq_timer(atlas_rq, slack);
 }
@@ -238,6 +262,9 @@ static void reset_slack_time(struct atlas_rq *atlas_rq) {
 	if (hrtimer_cancel(&atlas_rq->timer)) {
 		atlas_rq->pending_work |= PENDING_STOP_CFS_ADVANCED;
 		resched_curr(rq_of(atlas_rq));
+
+		account_running_slack_stop(atlas_rq);
+
 		atlas_rq->timer_target = ATLAS_NONE;
 	}
 
@@ -311,9 +338,12 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 			BUG_ON(rq->curr->sched_class != &atlas_sched_class);
 			break;
 		case ATLAS_SLACK:
-			add_nr_running(rq, 1);
-			atlas_rq->pending_work |= PENDING_STOP_CFS_ADVANCED;
-			atlas_debug_(TIMER, "SLACK");
+			/* slack is over, all ATLAS threads are
+			 * considered runnable again */
+			account_running_slack_stop(atlas_rq);
+			if (likely(sysctl_sched_atlas_advance_in_cfs)) {
+				atlas_rq->pending_work |= PENDING_STOP_CFS_ADVANCED;
+			}
 			break;
 		default:
 			atlas_debug_(TIMER, "BUG");
@@ -703,6 +733,7 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->tasks_timeline = RB_ROOT;
 	atlas_rq->rb_leftmost_se = NULL;
 	atlas_rq->nr_runnable = 0;
+	atlas_rq->in_slack = 0;
 	atlas_rq->jobs = RB_ROOT;
 
 	hrtimer_init(&atlas_rq->timer, CLOCK_MONOTONIC,
@@ -1051,11 +1082,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 			// skip setup of timer, it is used for slack
 			timer = 0;
 			atlas_rq->pending_work |= PENDING_START_CFS_ADVANCED;
-		} else {
-			/* reduce nr_runnable, since we are in slack and will
-			 * not run, when pick_next_task is called
-			 */
-			sub_nr_running(rq, 1);
 		}
 
 		goto unlock_out;
