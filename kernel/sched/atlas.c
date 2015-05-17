@@ -558,38 +558,6 @@ static void debug_task(struct task_struct *p) {
 }
 #endif /* ATLAS_DEBUG */
 
-static struct atlas_job *first_job(struct sched_atlas_entity *se)
-{
-	struct atlas_job *job = NULL;
-	unsigned long flags;
-
-	spin_lock_irqsave(&se->jobs_lock, flags);
-	job = list_first_entry_or_null(&se->jobs, struct atlas_job, list);
-	spin_unlock_irqrestore(&se->jobs_lock, flags);
-
-	return job;
-}
-
-/*
- * must be called with lock hold
- */
-static struct atlas_job *pop_task_job(struct sched_atlas_entity *se)
-{
-	unsigned long flags;
-	struct atlas_job *job = NULL;
-
-	spin_lock_irqsave(&se->jobs_lock, flags);
-
-	if (list_empty(&se->jobs))
-		goto out;
-
-	job = list_first_entry(&se->jobs, struct atlas_job, list);
-	list_del(&job->list);
-out:
-	spin_unlock_irqrestore(&se->jobs_lock, flags);
-	return job;
-}
-
 /*
  * must be called with rcu_read_lock hold
  */
@@ -1729,10 +1697,17 @@ SYSCALL_DEFINE0(atlas_next)
 
 	atlas_debug_(SYS_NEXT, "Job:  " JOB_FMT, JOB_ARG(se->job));
 
-	// clean up
+	/* maybe I should check first_entry_or_null() for non-NULL and then
+	 * remove, instead of checking se->job… ?
+	 */
 	if (se->job) {
 		unsigned long flags;
-		struct atlas_job *job = pop_task_job(se);
+
+		struct atlas_job *job = list_first_entry(
+				&se->jobs, struct atlas_job, list);
+		/* if there is an se->job, there has to be at least one entry in
+		 * the list. */
+		BUG_ON(!job);
 
 		if (likely(job_in_rq(se->job)))
 			se->flags |= ATLAS_PENDING_JOBS;
@@ -1745,12 +1720,25 @@ SYSCALL_DEFINE0(atlas_next)
 			     current->comm, JOB_ARG(job),
 			     ktime_to_ms(ktime_get()),
 			     sched_name(current->policy));
+
+		{
+			spin_lock_irqsave(&se->jobs_lock, flags);
+			list_del(&job->list);
+			spin_unlock_irqrestore(&se->jobs_lock, flags);
+		}
+
 		erase_rq_job(atlas_rq, job);
 		job_dealloc(job);
 		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 	}
 
-	se->job = first_job(se);
+	/*
+	 * This is not correct. use first_entry_or_null to choose whether to
+	 * return or block, but job->se should point to the job to which the
+	 * runtime is currently accounted. Thus, se->job has to be set by
+	 * pick_next_task.
+	 */
+	se->job = list_first_entry_or_null(&se->jobs, struct atlas_job, list);
 	atlas_debug_(SYS_NEXT, "Next: " JOB_FMT, JOB_ARG(se->job));
 
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
@@ -1766,10 +1754,10 @@ SYSCALL_DEFINE0(atlas_next)
 		set_current_state(TASK_INTERRUPTIBLE);
 		
 		//we are aware of the lost update problem
-		if ((se->job = first_job(se)))
-		{
+		if ((se->job = list_first_entry_or_null(
+				     &se->jobs, struct atlas_job, list)))
 			break;
-		}
+
 		atlas_debug(SYS_NEXT, "pid=%d no job, call schedule now", current->pid);
 
 		if (likely(!signal_pending(current))) {
