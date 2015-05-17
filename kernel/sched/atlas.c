@@ -1871,6 +1871,16 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 	rcu_read_lock();
 	job->tsk = pid_task(pidp, PIDTYPE_PID);
 	BUG_ON(!job->tsk);
+
+	if (task_tgid_vnr(current) != task_tgid_vnr(job->tsk)) {
+		atlas_debug_(SYS_SUBMIT,
+			     "Not allowed to submit jobs to task %s/%d",
+			     job->tsk->comm, task_pid_vnr(job->tsk));
+		rcu_read_unlock();
+		kfree(job);
+		return -EPERM;
+	}
+
 	assign_task_job(job->tsk, job);
 
 	atlas_rq = &task_rq(job->tsk)->atlas;
