@@ -1886,12 +1886,15 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 
 	assign_task_job(job->tsk, job);
 
-	atlas_rq = &task_rq(job->tsk)->atlas;
-	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+	rq = task_rq_lock(job->tsk, &flags);
+	atlas_rq = &rq->atlas;
+
+	raw_spin_lock(&atlas_rq->lock);
 
 	assign_rq_job(atlas_rq, job);
 
-	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+	raw_spin_unlock(&atlas_rq->lock);
+	task_rq_unlock(rq, job->tsk, &flags);
 
 	rcu_read_unlock();
 
