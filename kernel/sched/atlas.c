@@ -1638,16 +1638,20 @@ const struct sched_class atlas_sched_class = {
  */
 enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer)
 {
-	struct sched_atlas_entity *se = container_of(timer, struct sched_atlas_entity, timer);
+	struct sched_atlas_entity *se =
+			container_of(timer, struct sched_atlas_entity, timer);
 	struct task_struct *p = task_of(se);
+	struct atlas_job *job = list_first_entry_or_null(
+			&se->jobs, struct atlas_job, list);
 
-	WARN_ON(!se->job);
+	WARN_ON(!job);
 	se->flags |= ATLAS_DEADLINE;
-	
-	atlas_debug(TIMER, "deadline missed: pid=%d", task_of(se)->pid);
+
+	atlas_debug_(TIMER, JOB_FMT " missed its deadline ", JOB_ARG(job));
+
 	wmb();
 	send_sig(SIGXCPU, p, 0);
-	
+
 	return HRTIMER_NORESTART;
 }
 
