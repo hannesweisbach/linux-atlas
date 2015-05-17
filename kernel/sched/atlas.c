@@ -621,24 +621,21 @@ static void assign_task_job(struct task_struct *p, struct atlas_job *job)
 	spin_lock_irqsave(&se->jobs_lock, flags);
 	wakeup = list_empty(&se->jobs) && (se->state == ATLAS_BLOCKED);
 
-	{
-		struct list_head *entry;
+	if (!list_empty(&se->jobs)) {
+		struct atlas_job *last = list_last_entry(
+				&se->jobs, struct atlas_job, list);
 
-		// typically, a new job should go to the end
-		list_for_each_prev(entry, &se->jobs)
-		{
-			struct atlas_job *curr = list_entry(
-					entry, struct atlas_job, list);
-			if (job_before(curr, job))
-				break;
-		}
-		list_add(&job->list, entry);
+		if (ktime_compare(job->deadline, last->deadline) < 0)
+			atlas_debug_(SYS_SUBMIT, "Submitted " JOB_FMT
+						 " has deadline before the "
+						 "last " JOB_FMT,
+				     JOB_ARG(job), JOB_ARG(last));
 	}
+	/* in submission order. */
+	list_add_tail(&job->list, &se->jobs);
+
 	spin_unlock_irqrestore(&se->jobs_lock, flags);
 
-	/*
-	 * wake up process
-	 */
 	if (wakeup)
 		wake_up_process(p);
 }
@@ -1734,9 +1731,12 @@ SYSCALL_DEFINE0(atlas_next)
 		update_curr_atlas(rq);
 	}
 
+	atlas_debug_(SYS_NEXT, "Job:  " JOB_FMT, JOB_ARG(se->job));
+
 	// clean up
 	if (se->job) {
 		unsigned long flags;
+		struct atlas_job *job = pop_task_job(se);
 
 		if (likely(job_in_rq(se->job)))
 			se->flags |= ATLAS_PENDING_JOBS;
@@ -1746,15 +1746,14 @@ SYSCALL_DEFINE0(atlas_next)
 		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 		atlas_debug_(SYS_NEXT, "Task '%s' finished " JOB_FMT " at "
 				       "%lld under %s",
-			     current->comm, JOB_ARG(se->job),
+			     current->comm, JOB_ARG(job),
 			     ktime_to_ms(ktime_get()),
 			     sched_name(current->policy));
-		erase_rq_job(atlas_rq, se->job);
-		job_dealloc(pop_task_job(se));
+		erase_rq_job(atlas_rq, job);
+		job_dealloc(job);
 		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 	}
 
-	atlas_debug_(SYS_NEXT, "Job:  " JOB_FMT, JOB_ARG(se->job));
 	se->job = first_job(se);
 	atlas_debug_(SYS_NEXT, "Next: " JOB_FMT, JOB_ARG(se->job));
 
