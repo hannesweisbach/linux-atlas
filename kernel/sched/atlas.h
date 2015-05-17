@@ -36,7 +36,6 @@ struct atlas_rq {
 	int in_slack;
 	struct hrtimer timer; //used for slack time and for time to cfs
 	enum atlas_timer_target timer_target;
-	ktime_t timer_end;
 	struct atlas_job *cfs_job;
 	ktime_t cfs_job_start;
 	unsigned long flags;
