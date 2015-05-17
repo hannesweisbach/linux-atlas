@@ -806,6 +806,7 @@ static void update_curr_atlas(struct rq *rq)
 		atlas_debug(ADAPT_SEXEC, "Accounting %lldus to " JOB_FMT,
 			    delta_exec / 1000, JOB_ARG(job));
 
+		assert_raw_spin_locked(&rq->lock);
 		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 		update_execution_time(atlas_rq, job, ns_to_ktime(delta_exec));
 		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
@@ -1019,6 +1020,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 	BUG_ON(atlas_rq->advance_in_cfs);
 
+	assert_raw_spin_locked(&rq->lock);
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 	
 	/*
@@ -1514,6 +1516,7 @@ static void cleanup_rq_(struct atlas_rq *atlas_rq)
 	struct atlas_job *curr = pick_first_job(atlas_rq);
 	ktime_t now = ktime_get();
 
+	assert_raw_spin_locked(&rq_of(atlas_rq)->lock);
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 
 	while (curr && unlikely(job_missed_deadline(curr, now))) {
@@ -1554,12 +1557,13 @@ static void cleanup_rq_(struct atlas_rq *atlas_rq)
  *
  * there might also be the timer
  */
-void exit_atlas(struct task_struct *p) {
-	struct atlas_job *job, *tmp;
-	struct rq *rq = task_rq(p);
-	struct atlas_rq *atlas_rq = &rq->atlas;
+void exit_atlas(struct task_struct *p)
+{
 	unsigned long flags;
-	
+	struct rq *const rq = task_rq_lock(p, &flags);
+	struct atlas_rq *const atlas_rq = &rq->atlas;
+	struct atlas_job *job, *tmp;
+
 	if (cpu_of(rq) != 0)
 		return;
 
@@ -1573,27 +1577,26 @@ void exit_atlas(struct task_struct *p) {
 	if ((job = p->atlas.job)) {
 		p->atlas.job = NULL;
 		put_job(job);
-		raw_spin_lock_irqsave(&rq->atlas.lock, flags);
+		raw_spin_lock(&rq->atlas.lock);
 		erase_rq_job(atlas_rq, job);
-		raw_spin_unlock_irqrestore(&rq->atlas.lock, flags);
+		raw_spin_unlock(&rq->atlas.lock);
 	}
-	
+
+	raw_spin_lock(&atlas_rq->lock);
 	spin_lock(&p->atlas.jobs_lock);
 	list_for_each_entry_safe(job, tmp, &p->atlas.jobs, list) {
-		raw_spin_lock_irqsave(&rq->atlas.lock, flags);
 		erase_rq_job(atlas_rq, job);
-		raw_spin_unlock_irqrestore(&rq->atlas.lock, flags);
 
 		erase_task_job(job);
 	}
 	spin_unlock(&p->atlas.jobs_lock);
+	raw_spin_unlock(&atlas_rq->lock);
 
 	//debug_rq(rq);
 	//debug_task(p);
+
+	task_rq_unlock(rq, p, &flags);
 }
-
-
-
 
 /*
  * All the scheduling class methods:
