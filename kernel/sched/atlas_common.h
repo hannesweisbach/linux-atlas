@@ -59,7 +59,7 @@ static inline int job_before(struct atlas_job *lhs, struct atlas_job *rhs)
 {
 	BUG_ON(!lhs);
 	BUG_ON(!rhs);
-	return ktime_to_ns(lhs->deadline) < ktime_to_ns(rhs->deadline);
+	return ktime_compare(lhs->deadline, rhs->deadline) < 0;
 }
 
 static inline struct sched_atlas_entity *
