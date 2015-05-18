@@ -65,6 +65,51 @@ void sched_log(const char *fmt, ...)
 	preempt_enable();
 }
 
+static struct atlas_job *pick_last_job(struct atlas_rq *atlas_rq)
+{
+	struct rb_node *last = rb_last(&atlas_rq->jobs);
+
+	if (!last)
+		return NULL;
+
+	return rb_entry(last, struct atlas_job, rb_node);
+}
+
+static struct atlas_job *pick_prev_job(struct atlas_job *s)
+{
+	struct rb_node *prev = rb_prev(&s->rb_node);
+
+	if (!prev)
+		return NULL;
+
+	return rb_entry(prev, struct atlas_job, rb_node);
+}
+
+static inline int job_in_rq(struct atlas_job *s)
+{
+	return !RB_EMPTY_NODE(&s->rb_node);
+}
+
+static inline int in_slacktime(struct atlas_rq *atlas_rq)
+{
+	return (atlas_rq->timer_target == ATLAS_SLACK);
+}
+
+static inline ktime_t ktime_min(ktime_t a, ktime_t b)
+{
+	return ns_to_ktime(min(ktime_to_ns(a), ktime_to_ns(b)));
+}
+
+static inline int job_missed_deadline(struct atlas_job *s, ktime_t now)
+{
+	return ktime_compare(s->deadline, now) <= 0;
+}
+
+static inline struct rq *rq_of(struct atlas_rq *atlas_rq)
+{
+	return container_of(atlas_rq, struct rq, atlas);
+}
+
 static inline struct atlas_job *job_alloc(uint64_t id, ktime_t deadline,
 					  ktime_t exectime)
 {
@@ -142,46 +187,6 @@ static void dequeue_entity(struct atlas_rq *atlas_rq,
 			&atlas_rq->rb_leftmost_se);
 }
 
-static struct atlas_job *pick_last_job(struct atlas_rq *atlas_rq) {
-	struct rb_node *last = rb_last(&atlas_rq->jobs);
-
-	if (!last)
-		return NULL;
-	
-	return rb_entry(last, struct atlas_job, rb_node);
-}
-
-static struct atlas_job *pick_prev_job(struct atlas_job *s) {
-	struct rb_node *prev = rb_prev(&s->rb_node);
-	
-	if (!prev)
-		return NULL;
-	
-	return rb_entry(prev, struct atlas_job, rb_node);
-}
-
-static inline int job_in_rq(struct atlas_job *s) {
-	return !RB_EMPTY_NODE(&s->rb_node);
-}
-
-static inline int in_slacktime(struct atlas_rq *atlas_rq) {
-	return (atlas_rq->timer_target == ATLAS_SLACK);
-}
-
-static inline ktime_t ktime_min(ktime_t a, ktime_t b) {
-	return ns_to_ktime(min(ktime_to_ns(a), ktime_to_ns(b)));
-}
-
-static inline int job_missed_deadline(struct atlas_job *s, ktime_t now)
-{
-	return ktime_compare(s->deadline, now) <= 0;
-}
-
-static inline struct rq *rq_of(struct atlas_rq *atlas_rq)
-{
-	return container_of(atlas_rq, struct rq, atlas);
-}
-
 
 
 
@@ -216,13 +221,25 @@ static void account_running_slack_start(struct atlas_rq *atlas_rq)
 
 static void account_running_slack_stop(struct atlas_rq *atlas_rq)
 {
-	BUG_ON(!atlas_rq->in_slack);
 	atlas_rq->nr_runnable += atlas_rq->in_slack;
 	add_nr_running(rq_of(atlas_rq), atlas_rq->in_slack);
 	atlas_rq->in_slack = 0;
 }
 
-static inline void start_slack_timer(struct atlas_rq *atlas_rq, ktime_t slack)
+ktime_t slacktime(struct atlas_job *job)
+{
+	ktime_t slack = ktime_sub(job_start(job), ktime_get());
+	ktime_t exec_sum = ktime_set(0, 0);
+	struct atlas_job *j = pick_prev_job(job);
+
+	for (; j; j = pick_prev_job(j))
+		exec_sum = ktime_add(exec_sum, j->sexectime);
+
+	return ktime_sub(slack, exec_sum);
+}
+
+static inline void start_slack_timer(struct atlas_rq *atlas_rq,
+				     struct atlas_job *job, ktime_t slack)
 {
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 	slack = ktime_add(slack, ktime_get());
@@ -231,9 +248,9 @@ static inline void start_slack_timer(struct atlas_rq *atlas_rq, ktime_t slack)
 
 	atlas_debug(TIMER, "Set slack timer for " JOB_FMT
 			   " to %lld; removing %d tasks",
-		    JOB_ARG(pick_first_job(atlas_rq)), ktime_to_ms(slack),
-		    atlas_rq->in_slack);
+		    JOB_ARG(job), ktime_to_ms(slack), atlas_rq->in_slack);
 
+	atlas_rq->slack_task = job->tsk;
 	atlas_rq->timer_target = ATLAS_SLACK;
 	__setup_rq_timer(atlas_rq, slack);
 }
@@ -262,16 +279,17 @@ static void stop_slack_timer(struct atlas_rq *atlas_rq)
 		return;
 
 	if (hrtimer_cancel(&atlas_rq->timer)) {
-		// set_bit(PENDING_STOP_CFS_ADVANCED, &atlas_rq->pending_work);
 		resched_curr(rq_of(atlas_rq));
 		account_running_slack_stop(atlas_rq);
 		atlas_rq->timer_target = ATLAS_NONE;
+		atlas_rq->slack_task = NULL;
 	}
 
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 
-	atlas_debug(TIMER, "Slack timer stopped for " JOB_FMT,
-		    JOB_ARG(pick_first_job(atlas_rq)));
+	atlas_debug(TIMER,
+		    "Slack timer stopped for " JOB_FMT " adding %d tasks",
+		    JOB_ARG(pick_first_job(atlas_rq)), atlas_rq->in_slack);
 }
 
 static void stop_job_timer(struct atlas_rq *atlas_rq)
@@ -326,46 +344,52 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 	struct atlas_rq *atlas_rq = container_of(timer, struct atlas_rq, timer);
 	struct rq *rq = rq_of(atlas_rq);
 
-	raw_spin_lock_irqsave(&rq->lock, flags);
-	
-	update_rq_clock(rq);
-	if (atlas_rq->curr)
-		update_curr_atlas(rq);
-
-	BUG_ON(atlas_rq->timer_target == ATLAS_NONE);
 
 	sched_log("Timer: %s", atlas_rq->timer_target == ATLAS_JOB ? "JOB" :
 						   atlas_rq->timer_target == ATLAS_SLACK ? "SLACK" : "BUG");
 	
 	switch (atlas_rq->timer_target) {
 		case ATLAS_JOB:
-			atlas_debug_(TIMER, "JOB");
+			atlas_debug_(TIMER, "Deadline for " JOB_FMT,
+				     JOB_ARG(atlas_rq->curr->job));
 			BUG_ON(rq->curr->sched_class != &atlas_sched_class);
 			break;
-		case ATLAS_SLACK:
+		case ATLAS_SLACK: {
+			struct atlas_job *job = pick_first_job(atlas_rq);
+
+			if (!job) {
+				atlas_debug_(TIMER, "End of SLACK with no job; "
+						    "adding %d tasks",
+					     atlas_rq->in_slack);
+			} else {
+				atlas_debug_(TIMER, "End of SLACK for " JOB_FMT
+						    " adding %d tasks.",
+					     JOB_ARG(job), atlas_rq->in_slack);
+			}
+
+			/*
+			 * if all slack tasks are in CFS or Recover, we need a
+			 * little trick for pick_next_task_atlas to be called.
+			 */
+			add_nr_running(rq, 1);
+
 			/* slack is over, all ATLAS threads are
 			 * considered runnable again */
 			account_running_slack_stop(atlas_rq);
-			if (likely(sysctl_sched_atlas_advance_in_cfs)) {
-				atlas_rq->pending_work |= PENDING_STOP_CFS_ADVANCED;
-			}
-			break;
+		} break;
 		default:
-			atlas_debug_(TIMER, "BUG");
+			atlas_debug_(TIMER, "Unkown or invalid timer target %d",
+				     atlas_rq->timer_target);
 			BUG();
 	}
 
 	atlas_rq->timer_target = ATLAS_NONE;
-	atlas_debug(TIMER, "timer expired: calling resched_task now");
-	
-	/* resched curr */
+
+	raw_spin_lock_irqsave(&rq->lock, flags);
 	if (rq->curr)
 		resched_curr(rq);
-	
-	BUG_ON(atlas_rq->slack_task &&
-		!(atlas_rq->pending_work & PENDING_STOP_CFS_ADVANCED));
-
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
+
 	return HRTIMER_NORESTART;
 }
 
@@ -617,72 +641,6 @@ void erase_task_job(struct atlas_job *s) {
 	list_del(&s->list);
 }
 
-
-
-/*
- * Handling of pending work, called by core scheduler
- * 
- * called with rq locked
- *
- * timer interrupt may have been already triggered
- */
-static void atlas_do_pending_work(struct rq *rq, struct task_struct *prev)
-{
-	unsigned long flags;
-	unsigned long pending_work;
-	struct atlas_rq *atlas_rq = &rq->atlas;
-
-	BUG_ON((rq->atlas.pending_work & PENDING_STOP_CFS_ADVANCED) &&
-	       (rq->atlas.pending_work & PENDING_START_CFS_ADVANCED) &&
-	       rq->atlas.slack_task);
-	BUG_ON((rq->atlas.pending_work & PENDING_STOP_CFS_ADVANCED) &&
-	       rq->atlas.slack_task);
-
-	//raw_spin_lock_irqsave(&rq->lock, flags);
-	//update_rq_clock(rq);
-	//resched_curr(rq);
-	//raw_spin_unlock_irqrestore(&rq->lock, flags);
-
-	//raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-	
-	//raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
-
-	atlas_debug_(PENDING_WORK, "");
-
-	if (test_and_clear_bit(PENDING_STOP_CFS_ADVANCED,
-			       &atlas_rq->pending_work)) {
-		struct task_struct **p = &atlas_rq->slack_task;
-		atlas_debug_(PENDING_WORK, "Stop advancing in CFS");
-		if (*p) {
-			atlas_debug(PENDING_WORK,
-				    "Move task '%s' (%d) to ATLAS.", (*p)->comm,
-				    task_pid_vnr(*p));
-			(*p)->atlas.flags &= ~ATLAS_CFS_ADVANCED;
-			atlas_set_scheduler(rq, *p, SCHED_ATLAS);
-			*p = NULL;
-		}
-		
-		BUG_ON(atlas_rq->slack_task != NULL);
-	}
-
-	if (test_and_clear_bit(PENDING_START_CFS_ADVANCED,
-			       &atlas_rq->pending_work)) {
-		atlas_debug_(PENDING_WORK, "Start advancing in CFS");
-		/* slack time? timer routine may have reset flag already */
-		if (atlas_rq->timer_target == ATLAS_SLACK)
-			advance_thread_in_cfs(atlas_rq);
-	}
-
-	BUG_ON(test_and_clear_bit(PENDING_JOB_TIMER, &atlas_rq->pending_work));
-
-	BUG_ON(test_and_clear_bit(PENDING_MOVE_TO_CFS,
-				  &atlas_rq->pending_work));
-	BUG_ON(test_and_clear_bit(PENDING_MOVE_TO_RECOVER,
-				  &atlas_rq->pending_work));
-	BUG_ON(test_and_clear_bit(PENDING_MOVE_TO_ATLAS,
-				  &atlas_rq->pending_work));
-}
-
 /*******************************************************
  * Scheduler stuff
  */
@@ -699,6 +657,7 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->rb_leftmost_se = NULL;
 	atlas_rq->nr_runnable = 0;
 	atlas_rq->in_slack = 0;
+	atlas_rq->needs_update = 0;
 	atlas_rq->jobs = RB_ROOT;
 
 	hrtimer_init(&atlas_rq->timer, CLOCK_MONOTONIC,
@@ -707,7 +666,6 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->timer_target = ATLAS_NONE;
 
 	atlas_rq->flags = 0;
-	atlas_rq->pending_work = 0;
 	atlas_rq->cfs_job = NULL;
 	atlas_rq->cfs_job_start = ktime_set(0, 0);
 
@@ -861,8 +819,7 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 	{
 		sched_log("ENQ: reset timer");
 		stop_timer(atlas_rq);
-		BUG_ON(atlas_rq->slack_task &&
-			!(atlas_rq->pending_work & PENDING_STOP_CFS_ADVANCED));
+		BUG_ON(atlas_rq->slack_task && !in_slacktime(atlas_rq));
 		//enqueue calls also check_preempt -> reschedule flag already set,
 		//because of higher scheduling-class
 	}
@@ -891,6 +848,12 @@ static void dequeue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 	se->on_rq = 0;
 	atlas_rq->nr_runnable--;
 	sub_nr_running(rq, 1);
+
+	if (atlas_rq->timer_target == ATLAS_NONE && !atlas_rq->nr_runnable) {
+		struct atlas_job *job = pick_first_job(atlas_rq);
+		if (job)
+			start_slack_timer(atlas_rq, job, slacktime(job));
+	}
 }
 
 static void yield_task_atlas(struct rq *rq)
@@ -951,7 +914,6 @@ preempt:
 	return;
 }
 
-static int get_slacktime(struct atlas_rq *atlas_rq, ktime_t *slack);
 static void cleanup_rq(struct atlas_rq *atlas_rq);
 static void cleanup_rq_(struct atlas_rq *atlas_rq);
 static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev);
@@ -961,174 +923,150 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 {
         struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se;
-	ktime_t slack;
-	struct atlas_job *job, *job_next;
-	struct task_struct *p;
+	struct atlas_job *job;
 	unsigned long flags;
-	int timer = 1;
-	int need_put = 1;
 
 	cleanup_rq_(atlas_rq);
 
-	if (unlikely(rq->atlas.pending_work))
-		atlas_do_pending_work(rq, prev);
-
-	/*
-	 * only proceed if there are runnable tasks
+	/* we have a slack task, but the timer already fired (resetting
+	 * timer_target)
 	 */
-	if (likely(!atlas_rq->nr_runnable))
+	if (atlas_rq->slack_task && !in_slacktime(atlas_rq)) {
+		/* The policy might not be SCHED_ATLAS because:
+		 * 1) pre-runtime in CFS
+		 * 2) deadline miss on an old job
+		 */
+		struct task_struct *slacker = atlas_rq->slack_task;
+		if (slacker->policy != SCHED_ATLAS) {
+			atlas_debug(PENDING_WORK,
+				    "Move task '%s' (%d) to ATLAS.",
+				    slacker->comm, task_pid_vnr(slacker));
+			atlas_set_scheduler(rq, slacker, SCHED_ATLAS);
+			/* reset slacker here or later when setting the job
+			 * timer? */
+		}
+		/*
+		 * undo the effect of the hack to get pick_next_task_atlas
+		 * called from the timer_rq_func, if all tasks are in CFS and/or
+		 * Recover
+		 */
+		sub_nr_running(rq, 1);
+		atlas_rq->slack_task = NULL;
+		atlas_debug(PICK_NEXT_TASK, "Slack time over for %s/%d",
+			    slacker->comm, task_pid_vnr(slacker));
+	} else if (atlas_rq->timer_target != ATLAS_NONE &&
+		   !atlas_rq->needs_update) {
+		/* if either job or slack timer is running, but the job tree
+		 * changed (assign_rq_job or chleanup_rq_ set the needs_update
+		 * flag)
+		 */
 		return NULL;
-
-	/*
-	 * slack time?
-	 */
-	if (in_slacktime(atlas_rq)) {
-		atlas_debug(PICK_NEXT_TASK,
-			    "No ATLAS job, because slack is available");
+	} else if (!pick_first_job(atlas_rq)) {
+		/* if a task is in Recover or CFS and overruns its deadline into
+		 * future tasks, which should be sheduled in ATLAS again.
+		 */
+		return NULL;
+	} else if (!atlas_rq->nr_runnable) {
 		return NULL;
 	}
+	//!
 
-	atlas_debug(PICK_NEXT_TASK, "SE: %p", atlas_rq->curr);
-	atlas_debug(PICK_NEXT_TASK, "rb_leftmost_se: %p",
-		    atlas_rq->rb_leftmost_se);
-	/* Ok, this needs serious restructuring.
-	 * ATLAS assumes, that put_prev_task has already been called. Linux scheduling
-	 * does not do this anymore - it is pick_next_task's responsibility to do so.
-	 * However, it seems that put_prev_task is only allowed to be called, if the
-	 * scheduler actually returns a task. But ATLAS doesn't know at this point.
-	 * The HOTFIX-solution is to call put_prev_task() if prev->sched_class is the
-	 * ATLAS sched_class. If not, put_prev_task is called just before returning
-	 * the new task. In case ATLAS changes the scheduling class of prev, the
-	 * decision whether put_prev_task was called or not is stored in need_put.
-	 * If we return NULL later, we revert the action of put_prev_task, so it can
-	 * be called later again by a lower sched_class.
-	 */
-	if (prev->sched_class == &atlas_sched_class) {
-		put_prev_task(rq, prev);
-		need_put = 0;
-	}
+	/* the slack timer might be running, but we might have a new task. so
+	 * cancel the thing and start a new timer, if necessary. */
+	stop_timer(atlas_rq);
 
-	se = pick_first_entity(atlas_rq);
+	atlas_debug(PICK_NEXT_TASK, "Task '%s' (%d) running in %s", prev->comm,
+		    task_pid_vnr(prev), sched_name(prev->policy));
 
-	/*
-	 * threads without a job are doing important things like
-	 * signal handling (by construction always at the beginning
-	 * of the tree)
-	 */
-	if (unlikely(!se->job)) {
-		atlas_debug(PICK_NEXT_TASK, "Without Job. Signalhandling?");
-		atlas_rq->curr = se;
-		dequeue_entity(atlas_rq, se);
-		timer = 0;
-		goto out;
-	}
-	
 	BUG_ON(atlas_rq->timer_target == ATLAS_SLACK);
 	BUG_ON(atlas_rq->timer_target == ATLAS_JOB);
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
-	BUG_ON(atlas_rq->slack_task);
+	//BUG_ON(atlas_rq->slack_task);
+
+	{
+		char buf[4096];
+		print_rq(rq, buf, sizeof(buf));
+		printk_deferred(KERN_EMERG "%s", buf);
+	}
 
 	assert_raw_spin_locked(&rq->lock);
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-	
-	/*
-	 * handle slack time
+
+	/* job can be NULL because put_prev_task is called after nr_runnable is
+	 * checked.
+	 * TODO: we can walk the job tree or the se tree.
+	 * walking the se tree is probably better or at least as much work as
+	 * wlaking the job tree, because #(jobs) <= #(tasks)
 	 */
-	if (get_slacktime(atlas_rq, &slack))
-	{
-		start_slack_timer(atlas_rq, slack);
-
-		if (likely(sysctl_sched_atlas_advance_in_cfs)) {
-			atlas_debug(PICK_NEXT_TASK, "advance in CFS");
-			atlas_rq->curr = se;
-			dequeue_entity(atlas_rq, se);
-			// skip setup of timer, it is used for slack
-			timer = 0;
-			atlas_rq->pending_work |= PENDING_START_CFS_ADVANCED;
+	for (job = pick_first_job(atlas_rq);
+	     job && !task_on_rq_queued(job->tsk); job = pick_next_job(job)) {
+		struct task_struct *tsk = job->tsk;
+		if (!task_on_rq_queued(tsk)) {
+			atlas_debug(PICK_NEXT_TASK, "Task %s/%d blocked",
+				    tsk->comm, task_pid_vnr(tsk));
 		}
-
-		goto unlock_out;
 	}
 
-	/*
-	 * no slack time left
-	 */
-	job = se->job;
-	BUG_ON(job == NULL);
-	BUG_ON(!job_in_rq(job));
+	atlas_rq->needs_update = 0;
 
-	job_next = pick_first_job(atlas_rq);
-	BUG_ON(job_next == NULL);
-	while (job != job_next) {
-		
-		p = job_next->tsk;
-		
-		/* job blocked? */
-		if (!p->on_rq) {
-			job_next = pick_next_job(job_next);
-			continue;
-		}
-
-		/* ready job and time scheduled in atlas -> move it to atlas */
-		BUG_ON(p->sched_class == &atlas_sched_class);
-
-		se = &p->atlas;
-
-		atlas_set_scheduler(rq, p, SCHED_ATLAS);
-
-		BUG_ON(in_interrupt());
-
-		/* only accessed with preemption disabled */
-		se->job = job_next;
-		se->flags |= ATLAS_PENDING_JOBS;
-
-		goto unlock_out;
-	}
-	
-	/*
-	 * job ready
-	 */
-
-	atlas_rq->curr = se;
-	dequeue_entity(atlas_rq, se);
-
-unlock_out:
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 
-out:
-	if (atlas_rq->curr) {
-		if (atlas_rq->pending_work)
-			resched_curr(rq_of(atlas_rq));
+	atlas_debug(PICK_NEXT_TASK, "Prev: " JOB_FMT, JOB_ARG(prev->atlas.job));
+	atlas_debug(PICK_NEXT_TASK, "Next: " JOB_FMT, JOB_ARG(job));
 
-		atlas_debug(PICK_NEXT_TASK, "pid=%d, need_resched=%d",
-			    task_of(atlas_rq->curr)->pid,
-			    test_tsk_need_resched(task_of(atlas_rq->curr)));
-		update_stats_curr_start(rq, atlas_rq->curr);
+	if (!job)
+		goto out_notask;
 
-		if (timer)
-			start_job_timer(atlas_rq, atlas_rq->curr->job);
+	se = &job->tsk->atlas;
 
-		atlas_debug(PICK_NEXT_TASK, "Next task: %p",
-			    task_of(atlas_rq->curr));
-		/*
-		 * FIXME: Is it possible to optimize for the case when the
-		 * next task is prev?
-		 * NB: Call only, if return value is actually a task. */
-		if (need_put)
-			put_prev_task(rq, prev);
+	/* slack calculation */
+	{
+		ktime_t slack = slacktime(job);
+		ktime_t min_slack = ns_to_ktime(sysctl_sched_atlas_min_slack);
+		atlas_debug(PICK_NEXT_TASK, "Slack for 1st job: %lldms",
+			    ktime_to_ns(slack) / 1000 / 1000);
 
-		return task_of(atlas_rq->curr);
-	} else {
-		/* We already called put_prev_task, but now we don't have a
-		 * task. since put_prev_task is supposed to be called by the
-		 * sched_class->put_prev_task which actually has a next task, we
-		 * need to revert the actions of put_prev_task.
-		 */
-		if (!need_put)
-			dequeue_entity(atlas_rq, &prev->atlas);
-		atlas_debug(PICK_NEXT_TASK, "NULL");
-		return NULL;
+		if (ktime_compare(slack, min_slack) < 0) {
+			start_job_timer(atlas_rq, job);
+		} else {
+			if (likely(sysctl_sched_atlas_advance_in_cfs)) {
+				atlas_debug(PICK_NEXT_TASK, "advance in CFS");
+				atlas_set_scheduler(rq, job->tsk, SCHED_NORMAL);
+			}
+
+			start_slack_timer(atlas_rq, job, slack);
+			goto out_notask;
+		}
 	}
+
+	if (job->tsk != prev) {
+		put_prev_task(rq, prev);
+		WARN_ON(sysctl_sched_atlas_advance_in_cfs &&
+			job->tsk->policy == SCHED_ATLAS);
+		if (job->tsk->policy != SCHED_ATLAS)
+			atlas_set_scheduler(rq, job->tsk, SCHED_ATLAS);
+
+		dequeue_entity(atlas_rq, se);
+	}
+
+	se->job = job;
+	se->flags |= ATLAS_PENDING_JOBS;
+	atlas_rq->curr = se;
+
+	atlas_debug(PICK_NEXT_TASK, "'%s' (%d) " JOB_FMT " to run.",
+		    task_of(atlas_rq->curr)->comm,
+		    /*task_pid_vnr(task_of(atlas_rq->curr)) */ task_of(
+				    atlas_rq->curr)->pid,
+		    JOB_ARG(atlas_rq->curr->job));
+
+	update_stats_curr_start(rq, atlas_rq->curr);
+
+	return task_of(atlas_rq->curr);
+
+out_notask:
+	atlas_rq->curr = NULL;
+	atlas_debug(PICK_NEXT_TASK, "No ATLAS job ready.");
+	return NULL;
 }
 
 static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
@@ -1434,6 +1372,8 @@ static void assign_rq_job(struct atlas_rq *atlas_rq,
 		resched_cpu(cpu_of(rq_of(atlas_rq)));
 	}
 
+	atlas_rq->needs_update = 1;
+
 	check_admission_plan(atlas_rq);
 }
 
@@ -1456,50 +1396,10 @@ void erase_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job)
 		rb_erase(&job->rb_node, &atlas_rq->jobs);
 		RB_CLEAR_NODE(&job->rb_node);
 		job->sexectime = tmp;
+		atlas_rq->needs_update = 1;
 	}	
 
 	check_admission_plan(atlas_rq);
-}
-
-/*
- * determine if there is slack time left. atlas_rq has to be locked
- * 
- * return: 1 if there is slack time
- * 		   0 if there is no slack time
- * 
- * the amount of slack time left is returned in ktime
- *
- * Assertions:
- * 	- first entity in rb-tree has a job
- */
-static int get_slacktime(struct atlas_rq *atlas_rq, ktime_t *slack) {
-	struct sched_atlas_entity *se;
-	struct atlas_job *job;
-	ktime_t start, sum, now;
-	
-	assert_raw_spin_locked(&atlas_rq->lock);
-	
-	se = pick_first_entity(atlas_rq);
-	BUG_ON(!se);
-	BUG_ON(!se->job);
-	BUG_ON(!job_in_rq(se->job));
-	
-	job = se->job;
-	start = job_start(job);
-	
-	//sum up the execution time of the jobs before
-	sum = ktime_set(0,0);
-	while((job = pick_prev_job(job))) {
-		sum = ktime_add(sum, job->sexectime);
-	}
-
-	now = ktime_get();
-	*slack = ktime_sub(ktime_sub(start, now), sum);
-
-	if (ktime_to_ns(*slack) > sysctl_sched_atlas_min_slack)
-		return 1;
-	else
-		return 0;
 }
 
 static void cleanup_rq(struct atlas_rq *atlas_rq)
