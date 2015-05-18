@@ -34,12 +34,12 @@ struct atlas_rq {
 	raw_spinlock_t			lock;
 	int nr_runnable;
 	int in_slack;
+	int needs_update;
 	struct hrtimer timer; //used for slack time and for time to cfs
 	enum atlas_timer_target timer_target;
 	struct atlas_job *cfs_job;
 	ktime_t cfs_job_start;
 	unsigned long flags;
-	unsigned long pending_work; //used in core to use callback in atlas
 	struct task_struct *slack_task;
 	struct task_struct *move_to_atlas;
 	int skip_update_curr;
