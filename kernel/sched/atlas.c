@@ -362,7 +362,7 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 	if (rq->curr)
 		resched_curr(rq);
 	
-	BUG_ON(atlas_rq->advance_in_cfs &&
+	BUG_ON(atlas_rq->slack_task &&
 		!(atlas_rq->pending_work & PENDING_STOP_CFS_ADVANCED));
 
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
@@ -473,7 +473,7 @@ static void advance_thread_in_cfs(struct atlas_rq *atlas_rq) {
 	struct sched_atlas_entity *se;
 	struct task_struct *p;
 
-	BUG_ON(atlas_rq->advance_in_cfs != NULL);
+	BUG_ON(atlas_rq->slack_task != NULL);
 
 	if (!atlas_rq->nr_runnable) {
 		sched_log("advance: no thread ready");
@@ -496,7 +496,7 @@ static void advance_thread_in_cfs(struct atlas_rq *atlas_rq) {
 	BUG_ON(!p->on_rq);
 	
 	BUG_ON(atlas_rq->timer_target != ATLAS_SLACK);
-	atlas_rq->advance_in_cfs = p;
+	atlas_rq->slack_task = p;
 	
 	//move p to cfs
 	p->atlas.flags |= ATLAS_CFS_ADVANCED;
@@ -517,7 +517,7 @@ void atlas_cfs_blocked(struct rq *rq, struct task_struct *p) {
 	/* switch the scheduling class back to atlas */
 	p->atlas.flags &= ~ATLAS_CFS_ADVANCED;
 	atlas_set_scheduler(rq, p, SCHED_ATLAS);
-	atlas_rq->advance_in_cfs = NULL;
+	atlas_rq->slack_task = NULL;
 
 	/* move the next ready task to cfs */
 	if (in_slacktime(atlas_rq))
@@ -634,9 +634,9 @@ static void atlas_do_pending_work(struct rq *rq, struct task_struct *prev)
 
 	BUG_ON((rq->atlas.pending_work & PENDING_STOP_CFS_ADVANCED) &&
 	       (rq->atlas.pending_work & PENDING_START_CFS_ADVANCED) &&
-	       rq->atlas.advance_in_cfs);
+	       rq->atlas.slack_task);
 	BUG_ON((rq->atlas.pending_work & PENDING_STOP_CFS_ADVANCED) &&
-	       rq->atlas.advance_in_cfs);
+	       rq->atlas.slack_task);
 
 	//raw_spin_lock_irqsave(&rq->lock, flags);
 	//update_rq_clock(rq);
@@ -651,7 +651,7 @@ static void atlas_do_pending_work(struct rq *rq, struct task_struct *prev)
 
 	if (test_and_clear_bit(PENDING_STOP_CFS_ADVANCED,
 			       &atlas_rq->pending_work)) {
-		struct task_struct **p = &atlas_rq->advance_in_cfs;
+		struct task_struct **p = &atlas_rq->slack_task;
 		atlas_debug_(PENDING_WORK, "Stop advancing in CFS");
 		if (*p) {
 			atlas_debug(PENDING_WORK,
@@ -662,7 +662,7 @@ static void atlas_do_pending_work(struct rq *rq, struct task_struct *prev)
 			*p = NULL;
 		}
 		
-		BUG_ON(atlas_rq->advance_in_cfs != NULL);
+		BUG_ON(atlas_rq->slack_task != NULL);
 	}
 
 	if (test_and_clear_bit(PENDING_START_CFS_ADVANCED,
@@ -711,7 +711,7 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->cfs_job = NULL;
 	atlas_rq->cfs_job_start = ktime_set(0, 0);
 
-	atlas_rq->advance_in_cfs = NULL;
+	atlas_rq->slack_task = NULL;
 	atlas_rq->skip_update_curr = 0;
 }
 
@@ -861,7 +861,7 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 	{
 		sched_log("ENQ: reset timer");
 		stop_timer(atlas_rq);
-		BUG_ON(atlas_rq->advance_in_cfs &&
+		BUG_ON(atlas_rq->slack_task &&
 			!(atlas_rq->pending_work & PENDING_STOP_CFS_ADVANCED));
 		//enqueue calls also check_preempt -> reschedule flag already set,
 		//because of higher scheduling-class
@@ -1026,7 +1026,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	BUG_ON(atlas_rq->timer_target == ATLAS_SLACK);
 	BUG_ON(atlas_rq->timer_target == ATLAS_JOB);
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
-	BUG_ON(atlas_rq->advance_in_cfs);
+	BUG_ON(atlas_rq->slack_task);
 
 	assert_raw_spin_locked(&rq->lock);
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
