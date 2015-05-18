@@ -100,12 +100,10 @@ TRACE_EVENT(atlas_enter,
 	TP_ARGS(rq),
 
 	TP_STRUCT__entry(
-		__field( unsigned long,	pending_work	)
 		__field( s64,		now		)
 	),
 
 	TP_fast_assign(
-		__entry->pending_work = rq->atlas.pending_work | rq->atlas_recover.pending_work << 8;
 		__entry->now          = ktime_to_ns(ktime_get());
 	),
 
