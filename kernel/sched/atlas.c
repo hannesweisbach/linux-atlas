@@ -1630,6 +1630,14 @@ SYSCALL_DEFINE0(atlas_next)
 	se->job = list_first_entry_or_null(&se->jobs, struct atlas_job, list);
 	atlas_debug_(SYS_NEXT, "Next: " JOB_FMT, JOB_ARG(se->job));
 
+	/* if there is no job now, set the scheduler to CFS. If left in ATLAS
+	 * or Recover, upon wakeup (for example due to a signal), they would
+	 * encounter no jobs present and an infinite scheduling loop would be
+	 * the result.
+	 */
+	if (!se->job && current->policy != SCHED_NORMAL)
+		atlas_set_scheduler(rq, current, SCHED_NORMAL);
+
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 
 	if (se->job)
