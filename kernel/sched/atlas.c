@@ -1709,19 +1709,14 @@ out:
 	return ret;
 }
 
-
-#define ATLAS_TIME_ABS 0
-#define ATLAS_TIME_REL 1
-
-SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
-		exectime, struct timeval __user *, deadline, int, time_base)
+SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
+		exectime, struct timeval __user *, deadline)
 
 {
 	struct timeval lexectime;
 	struct timeval ldeadline;
 	struct atlas_job *job = NULL;
 	struct pid *pidp;
-	ktime_t kdeadline;
 	struct atlas_rq *atlas_rq;
 	unsigned long flags;
 
@@ -1739,13 +1734,6 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 	}
 
 	/*
-	 * calculate deadline with respect to CLOCK_MONOTONIC
-	 */
-	kdeadline = timeval_to_ktime(ldeadline);
-	if (time_base == ATLAS_TIME_REL)
-		kdeadline = ktime_add(ktime_get(), kdeadline);
-
-	/*
 	 * check for thread existence
 	 */
 	pidp = find_get_pid(pid);
@@ -1755,7 +1743,8 @@ SYSCALL_DEFINE5(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 		return -ESRCH;
 	}
 
-	job = job_alloc(id, kdeadline, timeval_to_ktime(lexectime));
+	job = job_alloc(id, timeval_to_ktime(ldeadline),
+			timeval_to_ktime(lexectime));
 	if (!job) {
 		atlas_debug_(SYS_SUBMIT, "Could not allocate job structure.");
 		return -ENOMEM;
