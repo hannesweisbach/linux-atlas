@@ -367,15 +367,6 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 					     JOB_ARG(job), atlas_rq->in_slack);
 			}
 
-			/*
-			 * if all slack tasks are in CFS or Recover, we need a
-			 * little trick for pick_next_task_atlas to be called.
-			 */
-			add_nr_running(rq, 1);
-
-			/* slack is over, all ATLAS threads are
-			 * considered runnable again */
-			account_running_slack_stop(atlas_rq);
 		} break;
 		default:
 			atlas_debug_(TIMER, "Unkown or invalid timer target %d",
@@ -918,6 +909,27 @@ static void cleanup_rq(struct atlas_rq *atlas_rq);
 static void cleanup_rq_(struct atlas_rq *atlas_rq);
 static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev);
 
+void atlas_handle_slack(struct rq *rq)
+{
+	struct atlas_rq *atlas_rq = &rq->atlas;
+	if (atlas_rq->slack_task && !in_slacktime(atlas_rq)) {
+		/* The policy might not be SCHED_ATLAS because:
+		 * 1) pre-runtime in CFS
+		 * 2) deadline miss on an old job
+		 */
+		struct task_struct *slacker = atlas_rq->slack_task;
+		if (slacker->policy != SCHED_ATLAS) {
+			atlas_debug(PENDING_WORK, "Move task %s/%d to ATLAS.",
+				    slacker->comm, task_pid_vnr(slacker));
+			atlas_set_scheduler(rq, slacker, SCHED_ATLAS);
+		}
+		atlas_rq->slack_task = NULL;
+		/* slack is over, all ATLAS threads are
+		 * considered runnable again */
+		account_running_slack_stop(atlas_rq);
+	}
+}
+
 static struct task_struct *pick_next_task_atlas(struct rq *rq,
 						struct task_struct *prev)
 {
@@ -926,36 +938,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	struct atlas_job *job;
 	unsigned long flags;
 
-	cleanup_rq_(atlas_rq);
-
-	/* we have a slack task, but the timer already fired (resetting
-	 * timer_target)
-	 */
-	if (atlas_rq->slack_task && !in_slacktime(atlas_rq)) {
-		/* The policy might not be SCHED_ATLAS because:
-		 * 1) pre-runtime in CFS
-		 * 2) deadline miss on an old job
-		 */
-		struct task_struct *slacker = atlas_rq->slack_task;
-		if (slacker->policy != SCHED_ATLAS) {
-			atlas_debug(PENDING_WORK,
-				    "Move task '%s' (%d) to ATLAS.",
-				    slacker->comm, task_pid_vnr(slacker));
-			atlas_set_scheduler(rq, slacker, SCHED_ATLAS);
-			/* reset slacker here or later when setting the job
-			 * timer? */
-		}
-		/*
-		 * undo the effect of the hack to get pick_next_task_atlas
-		 * called from the timer_rq_func, if all tasks are in CFS and/or
-		 * Recover
-		 */
-		sub_nr_running(rq, 1);
-		atlas_rq->slack_task = NULL;
-		atlas_debug(PICK_NEXT_TASK, "Slack time over for %s/%d",
-			    slacker->comm, task_pid_vnr(slacker));
-	} else if (atlas_rq->timer_target != ATLAS_NONE &&
-		   !atlas_rq->needs_update) {
+	if (atlas_rq->timer_target != ATLAS_NONE && !atlas_rq->needs_update) {
 		/* if either job or slack timer is running, but the job tree
 		 * changed (assign_rq_job or chleanup_rq_ set the needs_update
 		 * flag)
