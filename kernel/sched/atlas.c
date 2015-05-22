@@ -1007,8 +1007,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	if (!job)
 		goto out_notask;
 
-	se = &job->tsk->atlas;
-
 	/* slack calculation */
 	{
 		ktime_t slack = slacktime(job);
@@ -1029,14 +1027,28 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		}
 	}
 
-	if (job->tsk != prev) {
+	se = &job->tsk->atlas;
+
+	/* job->tsk and prev might be the same task, but prev might be scheduled
+	 * in Recover or CFS, so pull them into ATLAS.
+	 */
+	if (job->tsk != prev || prev->policy != SCHED_ATLAS) {
+		atlas_debug(PICK_NEXT_TASK, "put_prev_task %s/%d", prev->comm,
+			    task_pid_vnr(prev));
 		put_prev_task(rq, prev);
+		update_stats_curr_start(rq, se);
 		WARN_ON(sysctl_sched_atlas_advance_in_cfs &&
 			job->tsk->policy == SCHED_ATLAS);
 		if (job->tsk->policy != SCHED_ATLAS)
 			atlas_set_scheduler(rq, job->tsk, SCHED_ATLAS);
 
 		dequeue_entity(atlas_rq, se);
+	} else if (se->job != job) {
+		/* Account properly, if the same task runs, but with a
+		 * different job
+		 */
+		update_curr_atlas(rq);
+		update_stats_curr_start(rq, se);
 	}
 
 	se->job = job;
@@ -1045,8 +1057,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 
 	atlas_debug(PICK_NEXT_TASK, JOB_FMT " to run.",
 		    JOB_ARG(atlas_rq->curr->job));
-
-	update_stats_curr_start(rq, atlas_rq->curr);
 
 	return task_of(atlas_rq->curr);
 
