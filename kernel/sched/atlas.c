@@ -1,11 +1,15 @@
 #include <linux/syscalls.h>
 #include <linux/rbtree.h>
 #include <linux/slab.h>
+#include <linux/mm.h>
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
 #include <linux/sched/atlas.h>
+#include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/list.h>
+#include <linux/spinlock.h>
+#include <linux/rcupdate.h>
 
 #include "sched.h"
 #include "atlas.h"
