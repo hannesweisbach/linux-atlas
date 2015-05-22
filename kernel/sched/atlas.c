@@ -1036,10 +1036,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	se->flags |= ATLAS_PENDING_JOBS;
 	atlas_rq->curr = se;
 
-	atlas_debug(PICK_NEXT_TASK, "'%s' (%d) " JOB_FMT " to run.",
-		    task_of(atlas_rq->curr)->comm,
-		    /*task_pid_vnr(task_of(atlas_rq->curr)) */ task_of(
-				    atlas_rq->curr)->pid,
+	atlas_debug(PICK_NEXT_TASK, JOB_FMT " to run.",
 		    JOB_ARG(atlas_rq->curr->job));
 
 	update_stats_curr_start(rq, atlas_rq->curr);
@@ -1604,10 +1601,9 @@ SYSCALL_DEFINE0(atlas_next)
 			se->flags &= ~ATLAS_PENDING_JOBS;
 
 		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-		atlas_debug_(SYS_NEXT, "Task '%s' finished " JOB_FMT " at "
+		atlas_debug_(SYS_NEXT, "Finished " JOB_FMT " at "
 				       "%lld under %s",
-			     current->comm, JOB_ARG(job),
-			     ktime_to_ms(ktime_get()),
+			     JOB_ARG(job), ktime_to_ms(ktime_get()),
 			     sched_name(current->policy));
 
 		{
@@ -1683,10 +1679,9 @@ out_timer:
 
 	set_tsk_need_resched(current);
 
-	atlas_debug_(SYS_NEXT, "Returning with " JOB_FMT
-			       " for Task '%s' and Job timer set to %lldms",
-		     JOB_ARG(se->job), current->comm,
-		     ktime_to_ms(se->job->deadline));
+	atlas_debug_(SYS_NEXT,
+		     "Returning with " JOB_FMT " Job timer set to %lldms",
+		     JOB_ARG(se->job), ktime_to_ms(se->job->deadline));
 
 	/*
 	 * Switch to ATLAS, if we have a job whose deadline has not been
