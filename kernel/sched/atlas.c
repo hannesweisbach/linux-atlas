@@ -986,7 +986,10 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	 * wlaking the job tree, because #(jobs) <= #(tasks)
 	 */
 	for (job = pick_first_job(atlas_rq);
-	     job && !task_on_rq_queued(job->tsk); job = pick_next_job(job)) {
+	     job &&
+	     (!task_on_rq_queued(job->tsk) ||
+	      ktime_compare(job->sdeadline, ns_to_ktime(rq_clock(rq))) < 0);
+	     job = pick_next_job(job)) {
 		struct task_struct *tsk = job->tsk;
 		if (!task_on_rq_queued(tsk)) {
 			atlas_debug(PICK_NEXT_TASK, "Task %s/%d blocked",
