@@ -176,10 +176,10 @@ void atlas_set_scheduler(struct rq *, struct task_struct *, int policy);
 	(job) ? (job)->tsk->comm : "(none)",                                   \
 			(job) ? task_pid_vnr(job->tsk) : 0,                    \
 			(job) ? job->id : -1,                                  \
-			(job) ? ktime_to_ms((job)->exectime) : -1,             \
 			(job) ? ktime_to_ms((job)->sexectime) : -1,            \
-			(job) ? ktime_to_ms((job)->deadline) : -1,             \
-			(job) ? ktime_to_ms((job)->sdeadline) : -1
+			(job) ? ktime_to_ms((job)->exectime) : -1,             \
+			(job) ? ktime_to_ms((job)->sdeadline) : -1,            \
+			(job) ? ktime_to_ms((job)->deadline) : -1
 
 #define atlas_debug_(flag, fmt, ...)                                           \
 	do {                                                                   \
