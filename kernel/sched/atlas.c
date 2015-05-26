@@ -1568,6 +1568,7 @@ enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer)
 SYSCALL_DEFINE0(atlas_next)
 {
 	int ret = 0;
+	struct atlas_job *next_job = NULL;
 	struct sched_atlas_entity *se = &current->atlas;
 	struct rq *rq;
 	struct atlas_rq *atlas_rq;
@@ -1640,20 +1641,19 @@ SYSCALL_DEFINE0(atlas_next)
 	 * runtime is currently accounted. Thus, se->job has to be set by
 	 * pick_next_task.
 	 */
-	se->job = list_first_entry_or_null(&se->jobs, struct atlas_job, list);
-	atlas_debug_(SYS_NEXT, "Next: " JOB_FMT, JOB_ARG(se->job));
+	next_job = list_first_entry_or_null(&se->jobs, struct atlas_job, list);
 
 	/* if there is no job now, set the scheduler to CFS. If left in ATLAS
 	 * or Recover, upon wakeup (for example due to a signal), they would
 	 * encounter no jobs present and an infinite scheduling loop would be
 	 * the result.
 	 */
-	if (!se->job && current->policy != SCHED_NORMAL)
+	if (next_job && current->policy != SCHED_NORMAL)
 		atlas_set_scheduler(rq, current, SCHED_NORMAL);
 
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 
-	if (se->job)
+	if (next_job)
 		goto out_timer;
 
 	preempt_enable();
@@ -1664,8 +1664,9 @@ SYSCALL_DEFINE0(atlas_next)
 		set_current_state(TASK_INTERRUPTIBLE);
 		
 		//we are aware of the lost update problem
-		if ((se->job = list_first_entry_or_null(
-				     &se->jobs, struct atlas_job, list)))
+		next_job = list_first_entry_or_null(&se->jobs, struct atlas_job,
+						    list);
+		if (next_job)
 			break;
 
 		atlas_debug(SYS_NEXT, "pid=%d no job, call schedule now", current->pid);
@@ -1687,9 +1688,6 @@ SYSCALL_DEFINE0(atlas_next)
 	__set_current_state(TASK_RUNNING);
 	se->state = ATLAS_RUNNING;
 
-	atlas_debug_(SYS_NEXT, "pid=%d job=%p job->deadline=%llu",
-		current->pid, se->job, ktime_to_us(se->job->deadline));
-	
 	preempt_disable();
 
 out_timer:
@@ -1698,7 +1696,7 @@ out_timer:
 
 	atlas_debug_(SYS_NEXT,
 		     "Returning with " JOB_FMT " Job timer set to %lldms",
-		     JOB_ARG(se->job), ktime_to_ms(se->job->deadline));
+		     JOB_ARG(next_job), ktime_to_ms(next_job->deadline));
 
 	/*
 	 * Switch to ATLAS, if we have a job whose deadline has not been
@@ -1706,7 +1704,7 @@ out_timer:
 	 */
 	raw_spin_lock_irqsave(&rq->lock, flags);
 	if (current->policy != SCHED_ATLAS &&
-	    !job_missed_deadline(current->atlas.job, ktime_get())) {
+	    !job_missed_deadline(next_job, ktime_get())) {
 		atlas_debug_(SYS_NEXT, "Switching to ATLAS");
 		atlas_set_scheduler(rq, current, SCHED_ATLAS);
 	}
@@ -1718,8 +1716,7 @@ out_timer:
 	 * instantaneously. SIGXCPU needs to be delivered irrespective of the
 	 * current policy of this task.
 	 */
-	hrtimer_start(&se->timer, se->job->deadline,
-		      HRTIMER_MODE_ABS_PINNED);
+	hrtimer_start(&se->timer, next_job->deadline, HRTIMER_MODE_ABS_PINNED);
 
 	sched_log("NEXT pid=%d job=%p", current->pid, current->atlas.job);
 
