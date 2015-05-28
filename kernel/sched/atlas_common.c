@@ -124,52 +124,48 @@ size_t print_atlas_job(const struct atlas_job const *job, char *buf,
 	}
 }
 
-size_t print_atlas_rq(const struct atlas_rq const *atlas_rq, char *buf,
-		      size_t size)
+size_t print_timeline(const struct rb_root *jobs, char *buf, const size_t size,
+		      const char *const name)
 {
 	size_t offset = 0;
-	const struct atlas_job *job, *prev = NULL;
+	const struct atlas_job *job;
 
-	offset += scnprintf(&buf[offset], size - offset, "JOBS:\n");
-	for (job = pick_first_job(atlas_rq); job;
-	     prev = job, job = pick_next_job(job)) {
+	{
+		struct rb_node *first = rb_first(jobs);
+		if (first)
+			job = rb_entry(first, struct atlas_job, rb_node);
+		else
+			job = NULL;
+	}
+
+	if (!job)
+		return offset;
+
+	offset += scnprintf(&buf[offset], size - offset, "%s:\n", name);
+
+	for (; job; job = pick_next_job(job)) {
 		offset += print_atlas_job(job, &buf[offset], size - offset);
 	}
-	offset += scnprintf(&buf[offset], size - offset,
-			    "======================\n");
 
+	offset += scnprintf(&buf[offset], size - offset, "\n");
 	return offset;
 }
 
-size_t print_rq(struct rq *rq, char *buf, size_t size)
+size_t print_rq(const struct rq *const rq, char *buf, size_t size)
 {
 	size_t offset = 0;
-	unsigned long flags;
-	const struct sched_atlas_entity const *se;
-	struct atlas_rq *atlas = &rq->atlas;
+	const struct atlas_rq *const atlas = &rq->atlas;
+	const struct atlas_recover_rq *const recover = &rq->atlas_recover;
 
 	offset += scnprintf(&buf[offset], size - offset,
-			    "SCHED_ATLAS: DEBUG rq=%d\n", cpu_of(rq));
-	offset += scnprintf(&buf[offset], size - offset,
-			    "  Currently running: %d\n", rq->atlas.nr_runnable);
-	offset += scnprintf(&buf[offset], size - offset, "  Curr: pid=%d\n",
-			    rq->atlas.curr ? task_of(rq->atlas.curr)->pid : -1);
-	offset += scnprintf(&buf[offset], size - offset,
-			    "  DEBUG tasks_timeline:\n");
+			    "DEBUG RQ (%d/%d/%d)\n", rq->nr_running,
+			    rq->atlas.nr_runnable,
+			    rq->atlas_recover.nr_runnable);
 
-	for (se = pick_first_entity(&rq->atlas); se;
-	     se = pick_next_entity(se)) {
-		offset += scnprintf(&buf[offset], size - offset,
-				    "    pid=%5d, job=%p\n", task_of(se)->pid,
-				    se->job);
-	}
-
-	offset += scnprintf(&buf[offset], size - offset,
-			    "======================\n");
-
-	raw_spin_lock_irqsave(&atlas->lock, flags);
-	offset += print_atlas_rq(atlas, &buf[offset], size - offset);
-	raw_spin_unlock_irqrestore(&atlas->lock, flags);
+	offset += print_timeline(&atlas->jobs, &buf[offset], size - offset,
+				 "ATLAS");
+	offset += print_timeline(&recover->jobs, &buf[offset], size - offset,
+				 "Recover");
 
 	return offset;
 }
