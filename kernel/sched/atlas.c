@@ -114,8 +114,8 @@ static inline struct rq *rq_of(struct atlas_rq *atlas_rq)
 	return container_of(atlas_rq, struct rq, atlas);
 }
 
-static inline struct atlas_job *job_alloc(uint64_t id, ktime_t deadline,
-					  ktime_t exectime)
+static inline struct atlas_job *
+job_alloc(const uint64_t id, const ktime_t exectime, const ktime_t deadline)
 {
 	struct atlas_job *job = kzalloc(sizeof(struct atlas_job), GFP_KERNEL);
 	if (!job) {
@@ -125,8 +125,19 @@ static inline struct atlas_job *job_alloc(uint64_t id, ktime_t deadline,
 	INIT_LIST_HEAD(&job->list);
 	RB_CLEAR_NODE(&job->rb_node);
 	job->deadline = job->sdeadline = deadline;
-	job->exectime = job->sexectime = exectime;
+	/* if the deadline is already in the past,
+	 * handle_deadline_misses() will move the task from ATLAS.
+	 * Assign execution times of 0, to ensure they are moved to
+	 * CFS, not Recover.
+	 */
+	if (ktime_compare(deadline, ktime_get()) < 0) {
+		job->exectime = job->sexectime = ktime_set(0, 0);
+	} else {
+		job->exectime = job->sexectime = exectime;
+	}
 	job->id = id;
+	job->tsk = NULL;
+	job->root = NULL;
 
 out:
 	return job;
@@ -134,47 +145,91 @@ out:
 
 static inline void job_dealloc(struct atlas_job *job)
 {
-	struct sched_atlas_entity *atlas_se;
 
 	if (!job)
 		return;
 
-	atlas_se = &job->tsk->atlas;
+	if (job->tsk) {
+		{ /* check job list */
+			struct sched_atlas_entity *atlas_se = &job->tsk->atlas;
 
-	{ /* check job list */
-		struct atlas_job *pos;
-		list_for_each_entry(pos, &atlas_se->jobs, list)
-		{
-			WARN(pos == job, JOB_FMT " is still in job list",
+			struct atlas_job *pos;
+			list_for_each_entry(pos, &atlas_se->jobs, list)
+			{
+				WARN(pos == job,
+				     JOB_FMT " is still in job list",
+				     JOB_ARG(job));
+			}
+		}
+		{ /* check rq rb tree */
+
+			struct rq *rq = task_rq(job->tsk);
+			struct atlas_rq *atlas_rq = &rq->atlas;
+
+			struct rb_node *node;
+			struct atlas_job *pos = NULL;
+			for (node = rb_first(&atlas_rq->jobs); node;
+			     node = rb_next(&pos->rb_node)) {
+				pos = rb_entry(node, struct atlas_job, rb_node);
+				WARN(job == pos, JOB_FMT " is still in rb tree",
+				     JOB_ARG(job));
+			}
+
+			WARN(job == atlas_rq->cfs_job,
+			     JOB_FMT " is referenced by 'cfs_job'",
 			     JOB_ARG(job));
 		}
-	}
-	{ /* check rq rb tree */
-
-		struct rq *rq = task_rq(job->tsk);
-		struct atlas_rq *atlas_rq = &rq->atlas;
-
-		struct rb_node *node;
-		struct atlas_job *pos = NULL;
-		for (node = rb_first(&atlas_rq->jobs); node;
-		     node = rb_next(&pos->rb_node)) {
-			pos = rb_entry(node, struct atlas_job, rb_node);
-			WARN(job == pos, JOB_FMT " is still in rb tree",
-			     JOB_ARG(job));
-		}
-
-		WARN(job == atlas_rq->cfs_job,
-		     JOB_FMT " is referenced by 'cfs_job'", JOB_ARG(job));
 	}
 
 	WARN(!RB_EMPTY_NODE(&job->rb_node), JOB_FMT " is not empty",
 	     JOB_ARG(job));
 
-	WARN(job->list.next != LIST_POISON1, JOB_FMT " has next pointer",
-	     JOB_ARG(job));
-	WARN(job->list.prev != LIST_POISON2, JOB_FMT " has prev pointer",
-	     JOB_ARG(job));
+	WARN(job->list.next && job->list.next != &job->list &&
+			     job->list.next != LIST_POISON1,
+	     JOB_FMT " has next pointer", JOB_ARG(job));
+	WARN(job->list.prev && job->list.prev != &job->list &&
+			     job->list.prev != LIST_POISON2,
+	     JOB_FMT " has prev pointer", JOB_ARG(job));
+
 	kfree(job);
+}
+
+static void insert_job_into_tree(struct rb_root *root,
+				 struct atlas_job *const job,
+				 struct rb_node **leftmost_job)
+{
+	struct rb_node **link = &root->rb_node;
+	struct rb_node *parent = NULL;
+	int leftmost = 1;
+
+	WARN_ON(!RB_EMPTY_NODE(&job->rb_node));
+
+	while (*link) {
+		struct atlas_job *entry =
+				rb_entry(*link, struct atlas_job, rb_node);
+		parent = *link;
+
+		if (job_before(job, entry)) {
+			link = &parent->rb_left;
+		} else {
+			link = &parent->rb_right;
+			leftmost = 0;
+		}
+	}
+
+	rb_link_node(&job->rb_node, parent, link);
+	rb_insert_color(&job->rb_node, root);
+	job->root = root;
+
+	if (leftmost && leftmost_job)
+		*leftmost_job = &job->rb_node;
+}
+
+static void remove_job_from_tree(struct atlas_job *const job)
+{
+	rb_erase(&job->rb_node, job->root);
+	RB_CLEAR_NODE(&job->rb_node);
+	job->root = NULL;
 }
 
 static void enqueue_entity(struct atlas_rq *atlas_rq,
@@ -580,52 +635,6 @@ static void debug_task(struct task_struct *p) {
 	spin_unlock(&p->atlas.jobs_lock);
 }
 #endif /* ATLAS_DEBUG */
-
-/*
- * must be called with rcu_read_lock hold
- */
-static void assign_task_job(struct task_struct *p, struct atlas_job *job)
-{
-	struct sched_atlas_entity *se;
-	unsigned wakeup = 0;
-	unsigned long flags;
-
-	BUG_ON(!p);
-
-#if !MIGRATE_ON
-	{
-		// ensure that p is mapped to cpu 0
-		cpumask_t test;
-		cpumask_clear(&test);
-		cpumask_set_cpu(0, &test);
-
-		BUG_ON(!cpumask_equal(&test, &p->cpus_allowed));
-	}
-#endif
-
-	se = &p->atlas;
-
-	spin_lock_irqsave(&se->jobs_lock, flags);
-	wakeup = list_empty(&se->jobs) && (se->state == ATLAS_BLOCKED);
-
-	if (!list_empty(&se->jobs)) {
-		struct atlas_job *last = list_last_entry(
-				&se->jobs, struct atlas_job, list);
-
-		if (ktime_compare(job->deadline, last->deadline) < 0)
-			atlas_debug_(SYS_SUBMIT, "Submitted " JOB_FMT
-						 " has deadline before the "
-						 "last " JOB_FMT,
-				     JOB_ARG(job), JOB_ARG(last));
-	}
-	/* in submission order. */
-	list_add_tail(&job->list, &se->jobs);
-
-	spin_unlock_irqrestore(&se->jobs_lock, flags);
-
-	if (wakeup)
-		wake_up_process(p);
-}
 
 /*
  * call with se->jobs_lock hold!
@@ -1307,6 +1316,7 @@ static void assign_rq_job(struct atlas_rq *atlas_rq,
 	
 	rb_link_node(&job->rb_node, parent, link);
 	rb_insert_color(&job->rb_node, &atlas_rq->jobs);	
+	job->root = &atlas_rq->jobs;
 
 	/* fix the scheduled deadline of the new job*/
 	next = pick_next_job(job);
@@ -1393,6 +1403,7 @@ void erase_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job)
 		rb_erase(&job->rb_node, &atlas_rq->jobs);
 		RB_CLEAR_NODE(&job->rb_node);
 		job->sexectime = tmp;
+		job->root = NULL;
 		atlas_rq->needs_update = 1;
 	}	
 
@@ -1412,47 +1423,6 @@ static void cleanup_rq(struct atlas_rq *atlas_rq)
 		erase_rq_job(atlas_rq, curr);
 		curr = next;
 	}
-}
-
-static void cleanup_rq_(struct atlas_rq *atlas_rq)
-{
-	unsigned long flags;
-	struct atlas_job *curr = pick_first_job(atlas_rq);
-	ktime_t now = ktime_get();
-
-	assert_raw_spin_locked(&rq_of(atlas_rq)->lock);
-	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-
-	while (curr && unlikely(job_missed_deadline(curr, now))) {
-		struct atlas_job *next = pick_next_job(curr);
-		atlas_debug(RUNQUEUE, "Removing " JOB_FMT " from the RQ",
-			    JOB_ARG(curr));
-		erase_rq_job(atlas_rq, curr);
-		{
-			/*
-			 * if task of curr is still in ATLAS
-			 * . put in ATLAS-Recover if sexectime > 0
-			 * . put in CFS otherwise
-			 */
-			struct task_struct *tsk = curr->tsk;
-			if (tsk->policy == SCHED_ATLAS) {
-				raw_spin_unlock_irqrestore(&atlas_rq->lock,
-							   flags);
-				if (ktime_compare(curr->sexectime,
-						  ktime_set(0, 30000)) <= 0)
-					atlas_set_scheduler(
-							task_rq(tsk), tsk,
-							SCHED_ATLAS_RECOVER);
-				else
-					atlas_set_scheduler(task_rq(tsk), tsk,
-							    SCHED_NORMAL);
-				raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-			}
-		}
-		curr = next;
-	}
-
-	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 }
 
 /* 
@@ -1562,9 +1532,75 @@ enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer)
 	return HRTIMER_NORESTART;
 }
 
-/*
- * sys_atlas_next
- */
+static void schedule_job(struct atlas_job *const job)
+{
+	atlas_debug_(SYS_SUBMIT, JOB_FMT, JOB_ARG(job));
+
+	{
+		unsigned long flags;
+		struct sched_atlas_entity *se = &job->tsk->atlas;
+		int wakeup;
+
+		spin_lock_irqsave(&se->jobs_lock, flags);
+
+		/* TODO: se->state is not protected by any lock */
+		wakeup = list_empty(&se->jobs) && (se->state == ATLAS_BLOCKED);
+		/* in submission order. */
+		list_add_tail(&job->list, &se->jobs);
+
+		spin_unlock_irqrestore(&se->jobs_lock, flags);
+
+		if (wakeup)
+			wake_up_process(job->tsk);
+	}
+
+	{
+		unsigned long flags;
+		struct rq *rq = task_rq_lock(job->tsk, &flags);
+		struct atlas_rq *atlas_rq = &rq->atlas;
+		struct atlas_job *curr = NULL;
+		struct atlas_job *prev = NULL;
+		raw_spin_lock(&atlas_rq->lock);
+
+		insert_job_into_tree(&atlas_rq->jobs, job, NULL);
+
+		/* Move from the next task backwards to adjust scheduled
+		 * deadlines and execution times.
+		 */
+		curr = pick_next_job(job);
+
+		/* If the new job has the latest deadline, adjust from this job
+		 * backwards in time.
+		 */
+		if (!curr)
+			curr = job;
+
+		for (prev = pick_prev_job(curr); prev;
+		     curr = prev, prev = pick_prev_job(prev)) {
+			if (is_collision(prev, curr))
+				resolve_collision(prev, curr);
+			else
+				break;
+		}
+
+		/* If there is no job before the new job in the RQ, timers need
+		 * to be adjusted or a reschedule is necessary.  The update
+		 * flag is used when no ATLAS tasks are runnable (i.e. tasks
+		 * are in slack/CFS/Recover)
+		 */
+		if (!pick_prev_job(job)) {
+			atlas_rq->needs_update = 1;
+			resched_curr(rq);
+		}
+
+		/* TODO: If task is in Recover/CFS but new job's deadline has
+		 * not passed, move the task to ATLAS
+		 */
+		raw_spin_unlock(&atlas_rq->lock);
+		task_rq_unlock(rq, job->tsk, &flags);
+	}
+}
+
 SYSCALL_DEFINE0(atlas_next)
 {
 	int ret = 0;
@@ -1732,10 +1768,8 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 {
 	struct timeval lexectime;
 	struct timeval ldeadline;
-	struct atlas_job *job = NULL;
-	struct pid *pidp;
-	struct atlas_rq *atlas_rq;
-	unsigned long flags;
+	struct atlas_job *job;
+	int ret = 0;
 
 	if (!exectime || !deadline || pid < 0) {
 		atlas_debug_(SYS_SUBMIT, "One is not valid: pid=%u, "
@@ -1750,52 +1784,42 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 		return -EFAULT;
 	}
 
-	/*
-	 * check for thread existence
-	 */
-	pidp = find_get_pid(pid);
-
-	if (!pidp) {
-		atlas_debug_(SYS_SUBMIT, "No process with PID %d found.", pid);
-		return -ESRCH;
-	}
-
-	job = job_alloc(id, timeval_to_ktime(ldeadline),
-			timeval_to_ktime(lexectime));
+	job = job_alloc(id, timeval_to_ktime(lexectime),
+			timeval_to_ktime(ldeadline));
 	if (!job) {
-		atlas_debug_(SYS_SUBMIT, "Could not allocate job structure.");
+		atlas_debug_(SYS_SUBMIT, "Could not allocate job structure.\n");
 		return -ENOMEM;
 	}
 
 	rcu_read_lock();
-	job->tsk = pid_task(pidp, PIDTYPE_PID);
-	BUG_ON(!job->tsk);
+	job->tsk = find_task_by_vpid(pid);
+	if (!job->tsk) {
+		atlas_debug_(SYS_SUBMIT, "No process with PID %d found.", pid);
+		ret = -ESRCH;
+		goto err;
+	}
 
 	if (task_tgid_vnr(current) != task_tgid_vnr(job->tsk)) {
 		atlas_debug_(SYS_SUBMIT,
 			     "Not allowed to submit jobs to task %s/%d",
 			     job->tsk->comm, task_pid_vnr(job->tsk));
-		rcu_read_unlock();
-		kfree(job);
-		return -EPERM;
+		ret = -EPERM;
+		goto err;
 	}
 
-	assign_task_job(job->tsk, job);
+	schedule_job(job);
 
-	rq = task_rq_lock(job->tsk, &flags);
-	atlas_rq = &rq->atlas;
-
-	raw_spin_lock(&atlas_rq->lock);
-
-	assign_rq_job(atlas_rq, job);
-
-	raw_spin_unlock(&atlas_rq->lock);
-	task_rq_unlock(rq, job->tsk, &flags);
+	{
+		unsigned long flags;
+		struct rq *rq = task_rq_lock(job->tsk, &flags);
+		debug_rq(rq);
+		task_rq_unlock(rq, job->tsk, &flags);
+	}
 
 	rcu_read_unlock();
-
-	atlas_debug_(SYS_SUBMIT, JOB_FMT " for Task '%s' (%d)", JOB_ARG(job),
-		     job->tsk->comm, pid);
-
 	return 0;
+err:
+	rcu_read_unlock();
+	job_dealloc(job);
+	return ret;
 }
