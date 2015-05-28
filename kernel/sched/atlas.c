@@ -106,7 +106,7 @@ static inline ktime_t ktime_min(ktime_t a, ktime_t b)
 
 static inline int job_missed_deadline(struct atlas_job *s, ktime_t now)
 {
-	return ktime_compare(s->deadline, now) <= 0;
+	return ktime_compare(s->sdeadline, now) <= 0;
 }
 
 static inline struct rq *rq_of(struct atlas_rq *atlas_rq)
@@ -323,8 +323,8 @@ static inline void start_job_timer(struct atlas_rq *atlas_rq,
 	atlas_rq->timer_target = ATLAS_JOB;
 
 	/* timeout on remaining execution time or deadline */
-	if (ktime_compare(timeout, job->deadline) > 0)
-		timeout = job->deadline;
+	if (ktime_compare(timeout, job->sdeadline) > 0)
+		timeout = job->sdeadline;
 
 	atlas_debug(TIMER, "Setup job timer for " JOB_FMT " to %lld",
 		    JOB_ARG(job), ktime_to_ms(timeout));
@@ -919,7 +919,7 @@ preempt:
 }
 
 static void cleanup_rq(struct atlas_rq *atlas_rq);
-static void cleanup_rq_(struct atlas_rq *atlas_rq);
+static void handle_deadline_misses(struct atlas_rq *atlas_rq);
 static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev);
 
 void atlas_handle_slack(struct rq *rq)
@@ -943,47 +943,98 @@ void atlas_handle_slack(struct rq *rq)
 	}
 }
 
+static void handle_deadline_misses(struct atlas_rq *atlas_rq)
+{
+	unsigned long flags;
+	struct atlas_job *curr = pick_first_job(atlas_rq);
+	ktime_t now = ktime_get();
+
+	assert_raw_spin_locked(&rq_of(atlas_rq)->lock);
+
+	/* required to have an accurate sexectime later, if the current task is
+	 * an ATLAS task
+	 * TODO: update conditionally.
+	 */
+	update_curr_atlas(rq_of(atlas_rq));
+
+	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+
+	while (curr && unlikely(job_missed_deadline(curr, now))) {
+		struct atlas_job *next = pick_next_job(curr);
+		atlas_debug(RUNQUEUE, "Removing " JOB_FMT " from the RQ (%lld)",
+			    JOB_ARG(curr), ktime_to_ns(now));
+		erase_rq_job(atlas_rq, curr);
+		/* TODO: put the erased job into the Recover job tree */
+		{
+			/*
+			 * if task of curr is still in ATLAS
+			 * . put in ATLAS-Recover if sexectime > 0
+			 * . put in CFS otherwise
+			 * TODO: optimize: don't migrate if the next job in the
+			 * schedule is for the same task and has less than
+			 * epsilon slack. this avoids migrating the task right
+			 * back into ATLAS
+			 */
+			struct task_struct *tsk = curr->tsk;
+			if (tsk->policy == SCHED_ATLAS) {
+				raw_spin_unlock_irqrestore(&atlas_rq->lock,
+							   flags);
+				if (ktime_compare(curr->sexectime,
+						  ktime_set(0, 30000)) > 0) {
+					atlas_set_scheduler(
+							task_rq(tsk), tsk,
+							SCHED_ATLAS_RECOVER);
+				} else {
+					atlas_set_scheduler(task_rq(tsk), tsk,
+							    SCHED_NORMAL);
+				}
+				raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+			}
+			if (tsk->policy == SCHED_ATLAS_RECOVER) {
+				atlas_debug(RUNQUEUE,
+					    "Moving " JOB_FMT " to Recover RQ",
+					    JOB_ARG(curr));
+				struct rq *rq = rq_of(atlas_rq);
+				insert_job_into_tree(
+						&rq->atlas_recover.jobs, curr,
+						&rq->atlas_recover
+								 .rb_leftmost_job);
+			}
+		}
+		curr = next;
+	}
+
+	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+}
+
 static struct task_struct *pick_next_task_atlas(struct rq *rq,
 						struct task_struct *prev)
 {
-        struct atlas_rq *atlas_rq = &rq->atlas;
+	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se;
 	struct atlas_job *job;
 	unsigned long flags;
 
-	if (atlas_rq->timer_target != ATLAS_NONE && !atlas_rq->needs_update) {
-		/* if either job or slack timer is running, but the job tree
-		 * changed (assign_rq_job or chleanup_rq_ set the needs_update
-		 * flag)
-		 */
-		return NULL;
-	} else if (!pick_first_job(atlas_rq)) {
-		/* if a task is in Recover or CFS and overruns its deadline into
-		 * future tasks, which should be sheduled in ATLAS again.
-		 */
-		return NULL;
-	} else if (!atlas_rq->nr_runnable) {
+	if (!atlas_rq->nr_runnable && !atlas_rq->needs_update) {
 		return NULL;
 	}
-	//!
+
+	handle_deadline_misses(atlas_rq);
 
 	/* the slack timer might be running, but we might have a new task. so
 	 * cancel the thing and start a new timer, if necessary. */
 	stop_timer(atlas_rq);
 
-	atlas_debug(PICK_NEXT_TASK, "Task '%s' (%d) running in %s", prev->comm,
-		    task_pid_vnr(prev), sched_name(prev->policy));
+	atlas_debug(PICK_NEXT_TASK, "Task %s/%d running in %s (%d/%d/%d)",
+		    prev->comm, task_pid_vnr(prev), sched_name(prev->policy),
+		    rq->nr_running, atlas_rq->nr_runnable,
+		    rq->atlas_recover.nr_runnable);
 
 	BUG_ON(atlas_rq->timer_target == ATLAS_SLACK);
 	BUG_ON(atlas_rq->timer_target == ATLAS_JOB);
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
-	//BUG_ON(atlas_rq->slack_task);
+	BUG_ON(atlas_rq->slack_task);
 
-	{
-		char buf[4096];
-		print_rq(rq, buf, sizeof(buf));
-		printk_deferred(KERN_EMERG "%s", buf);
-	}
 
 	assert_raw_spin_locked(&rq->lock);
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
@@ -995,10 +1046,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	 * wlaking the job tree, because #(jobs) <= #(tasks)
 	 */
 	for (job = pick_first_job(atlas_rq);
-	     job &&
-	     (!task_on_rq_queued(job->tsk) ||
-	      ktime_compare(job->sdeadline, ns_to_ktime(rq_clock(rq))) < 0);
-	     job = pick_next_job(job)) {
+	     job && !task_on_rq_queued(job->tsk); job = pick_next_job(job)) {
 		struct task_struct *tsk = job->tsk;
 		if (!task_on_rq_queued(tsk)) {
 			atlas_debug(PICK_NEXT_TASK, "Task %s/%d blocked",
