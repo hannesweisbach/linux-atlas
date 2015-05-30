@@ -1649,6 +1649,111 @@ static void schedule_job(struct atlas_job *const job)
 	}
 }
 
+const char *job_rq_name(struct atlas_job *job)
+{
+	struct atlas_rq *atlas_rq = &task_rq(job->tsk)->atlas;
+	struct atlas_recover_rq *recover_rq = &task_rq(job->tsk)->atlas_recover;
+
+	if (!job->root)
+		return "CFS";
+	else if (job->root == &atlas_rq->jobs)
+		return "ATLAS";
+	else if (job->root == &recover_rq->jobs)
+		return "Recover";
+	else
+		BUG();
+}
+
+static void destroy_first_job(struct task_struct *tsk)
+{
+	struct list_head *jobs = &tsk->atlas.jobs;
+	struct atlas_job *job =
+			list_first_entry_or_null(jobs, struct atlas_job, list);
+
+	BUG_ON(!job);
+
+	atlas_debug_(SYS_NEXT, "Finished " JOB_FMT " at "
+			       "%lld under %s",
+		     JOB_ARG(job), ktime_to_ms(ktime_get()),
+		     sched_name(current->policy));
+
+	{
+		unsigned long flags;
+		spinlock_t *jobs_lock = &tsk->atlas.jobs_lock;
+		spin_lock_irqsave(jobs_lock, flags);
+		list_del(&job->list);
+		spin_unlock_irqrestore(jobs_lock, flags);
+	}
+
+	if (job_in_rq(job)) {
+		struct atlas_rq *atlas_rq = &task_rq(tsk)->atlas;
+		struct atlas_job *curr;
+		unsigned long flags;
+		int atlas_job;
+
+		BUG_ON(!job->root);
+
+		atlas_debug_(SYS_NEXT, "Removing " JOB_FMT " from %s",
+			     JOB_ARG(job), job_rq_name(job));
+
+		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+
+		/* To rebuild the timeline, pick the job that is scheduled after
+		 * the to-be-deleted job. If there is none, that means, that the
+		 * to-be-deleted job was the latest currently known job.
+		 * In that case, rebuild the timeline from the job preceding
+		 * the to-be-deleted job. Also, the deadline of the previous
+		 * job does not need to respect any following job (since now it
+		 * is the latest job).
+		 */
+		curr = pick_next_job(job);
+		if (!curr) {
+			curr = pick_prev_job(job);
+			if (curr)
+				curr->sdeadline = curr->deadline;
+		}
+
+		atlas_job = job->root == &atlas_rq->jobs;
+		remove_job_from_tree(job);
+
+		if (atlas_job && curr) {
+			struct atlas_job *prev = pick_prev_job(curr);
+			/* TODO: extend execution time of curr */
+			for (; prev; curr = prev, prev = pick_prev_job(curr)) {
+				ktime_t new_deadline;
+				ktime_t gap;
+				ktime_t extended;
+
+				if (ktime_equal(prev->deadline,
+						prev->sdeadline))
+					break;
+
+				atlas_debug(SYS_NEXT, "Extending execution "
+						      "time of " JOB_FMT,
+					    JOB_ARG(prev));
+				new_deadline = ktime_min(prev->deadline,
+							 job_start(curr));
+				gap = ktime_sub(new_deadline, prev->sdeadline);
+				prev->sdeadline = new_deadline;
+				extended = ktime_add(gap, prev->sexectime);
+
+				/* don't extend beyond the reservation */
+				prev->sexectime = ktime_min(prev->exectime,
+							    extended);
+
+				atlas_debug(SYS_NEXT, "Extended " JOB_FMT,
+					    JOB_ARG(job));
+			}
+		} else {
+		}
+
+		atlas_rq->needs_update = 1;
+		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+	}
+
+	job_dealloc(job);
+}
+
 SYSCALL_DEFINE0(atlas_next)
 {
 	int ret = 0;
@@ -1689,34 +1794,7 @@ SYSCALL_DEFINE0(atlas_next)
 	 * remove, instead of checking se->job… ?
 	 */
 	if (se->job) {
-		unsigned long flags;
-
-		struct atlas_job *job = list_first_entry(
-				&se->jobs, struct atlas_job, list);
-		/* if there is an se->job, there has to be at least one entry in
-		 * the list. */
-		BUG_ON(!job);
-
-		if (likely(job_in_rq(se->job)))
-			se->flags |= ATLAS_PENDING_JOBS;
-		else
-			se->flags &= ~ATLAS_PENDING_JOBS;
-
-		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-		atlas_debug_(SYS_NEXT, "Finished " JOB_FMT " at "
-				       "%lld under %s",
-			     JOB_ARG(job), ktime_to_ms(ktime_get()),
-			     sched_name(current->policy));
-
-		{
-			spin_lock_irqsave(&se->jobs_lock, flags);
-			list_del(&job->list);
-			spin_unlock_irqrestore(&se->jobs_lock, flags);
-		}
-
-		erase_rq_job(atlas_rq, job);
-		job_dealloc(job);
-		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+		destroy_first_job(current);
 	}
 
 	/*
