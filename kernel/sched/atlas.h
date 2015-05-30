@@ -12,6 +12,7 @@
 struct atlas_job {
 	struct list_head list;
 	struct rb_node rb_node;
+	struct rb_root *root;
 	struct task_struct *tsk;
 	ktime_t exectime; //relative
 	ktime_t deadline; //absolut
