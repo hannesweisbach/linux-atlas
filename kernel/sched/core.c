@@ -3204,7 +3204,7 @@ static void __sched notrace __schedule(bool preempt)
 #ifdef CONFIG_ATLAS
 			/* check if thread was scheduled by cfs to support an
 			 * atlas job */
-			if (unlikely(prev->atlas.flags & ATLAS_CFS_ADVANCED)) {
+			if (unlikely(rq->atlas.slack_task == prev)) {
 				atlas_cfs_blocked(rq, prev);
 			}
 #endif

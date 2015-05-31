@@ -3,11 +3,6 @@
 
 #include <linux/spinlock.h>
 
-#define ATLAS_EXECTIME      0x1
-#define ATLAS_DEADLINE      0x2
-#define ATLAS_CFS_ADVANCED  0x4
-#define ATLAS_PENDING_JOBS  0x8
-
 //needs to be defined here because of trace stuff
 struct atlas_job {
 	struct list_head list;
@@ -37,11 +32,8 @@ struct atlas_rq {
 	int needs_update;
 	struct hrtimer timer; //used for slack time and for time to cfs
 	enum atlas_timer_target timer_target;
-	struct atlas_job *cfs_job;
-	ktime_t cfs_job_start;
 	unsigned long flags;
 	struct task_struct *slack_task;
-	struct task_struct *move_to_atlas;
 	int skip_update_curr;
 };
 
