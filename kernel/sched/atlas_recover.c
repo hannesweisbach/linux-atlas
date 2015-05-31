@@ -169,7 +169,8 @@ static void put_prev_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 	if (se->on_recover_rq) {
 		update_curr_atlas_recover(rq);
 	}
-	
+
+	prev->atlas.job = NULL;
 	atlas_recover_rq->curr = NULL;
 	
 	return;

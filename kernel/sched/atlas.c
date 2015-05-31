@@ -1095,6 +1095,7 @@ static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 		update_stats_wait_start(rq, &prev->se);
 	}
 
+	prev->atlas.job = NULL;
 	atlas_rq->curr = NULL;
 }
 
