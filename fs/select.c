@@ -27,6 +27,7 @@
 #include <linux/rcupdate.h>
 #include <linux/hrtimer.h>
 #include <linux/sched/rt.h>
+#include <linux/sched/atlas.h>
 #include <linux/freezer.h>
 #include <net/busy_poll.h>
 
@@ -79,7 +80,7 @@ long select_estimate_accuracy(struct timespec *tv)
 	 * Realtime tasks get a slack of 0 for obvious reasons.
 	 */
 
-	if (rt_task(current))
+	if (rt_task(current) || atlas_task(current))
 		return 0;
 
 	ktime_get_ts(&now);
