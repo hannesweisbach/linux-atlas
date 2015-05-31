@@ -12,6 +12,11 @@
 
 const struct sched_class atlas_recover_sched_class;
 
+static inline int has_execution_time_left(const struct atlas_job const *job)
+{
+	return ktime_compare(job->sexectime, ktime_set(0, 0)) > 0;
+}
+
 static inline struct rq *rq_of(struct atlas_recover_rq *atlas_recover_rq)
 {
 	return container_of(atlas_recover_rq, struct rq, atlas_recover);
@@ -260,62 +265,29 @@ static int select_task_rq_atlas_recover(struct task_struct *p, int prev_cpu,
 static struct task_struct *
 pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 {
-	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
-	struct atlas_job *job;
+	unsigned long flags;
+	struct atlas_recover_rq *recover_rq = &rq->atlas_recover;
+	struct atlas_job *job = pick_first_job(recover_rq->rb_leftmost_job);
 
-	/*
-	 * . next might have just been called, so se->job might be NULL. If it
-	 *   is, then this task has no more jobs left -> demote to CFS
-	 * . If there is a job, but there is no more execution time left,
-	 *   demote to CFS TODO: see if there is a next job, then we can lift
-	 *   it into ATLAS.
-	 * Update: job cannot be NULL anymore, because if job is NULL, we have
-	 * to wait in next, in which case the task is demoted to CFS.
-	 */
-	if (prev->policy == SCHED_ATLAS_RECOVER &&
-	    (!prev->atlas.job || !has_execution_time_left(&prev->atlas))) {
-		struct list_head *pos;
-		atlas_debug(PICK_NEXT_TASK, "se->job is NULL. Jobs:");
-		list_for_each(pos, &prev->atlas.jobs)
-		{
-			struct atlas_job *job =
-					list_entry(pos, struct atlas_job, list);
+	update_curr_atlas_recover(rq);
 
-			atlas_debug(PICK_NEXT_TASK, JOB_FMT, JOB_ARG(job));
-		}
-		if (prev->atlas.job) {
-			remove_job_from_tree(
-					prev->atlas.job,
-					&rq->atlas_recover.rb_leftmost_job);
-		}
-		atlas_set_scheduler(rq, prev, SCHED_NORMAL);
+	for (; job && !has_execution_time_left(job); job = pick_next_job(job)) {
+		BUG_ON(job->root != &recover_rq->jobs);
+		remove_job_from_tree(job, &recover_rq->rb_leftmost_job);
+
+		BUG_ON(job->tsk->policy != SCHED_ATLAS_RECOVER);
+		atlas_set_scheduler(task_rq(job->tsk), job->tsk, SCHED_NORMAL);
 	}
 
-	/* call put put_prev_task if we can find a next task:
-	 * . we have runnable tasks
-	 * . prev is one of ours (nr_runnable will be 1 after put_prev_task())
-	 *   and prev has execution time left (otherwise it will be moved to
-	 *   CFS)
-	 */
-	if (atlas_recover_rq->nr_runnable ||
-	    (prev->policy == SCHED_ATLAS_RECOVER &&
-	     has_execution_time_left(&prev->atlas))) {
-		atlas_debug(PICK_NEXT_TASK, "put_prev_task '%s/%d': %s",
-			    prev->comm, task_pid_vnr(prev),
-			    atlas_recover_rq->nr_runnable
-					    ? "nr_runnable"
-					    : "execution time left");
-		put_prev_task(rq, prev);
-	}
+	BUG_ON(job && !recover_rq->nr_runnable);
+	BUG_ON(recover_rq->nr_runnable && !job);
 
-	if (likely(!atlas_recover_rq->nr_runnable)) {
+	if (likely(!recover_rq->nr_runnable))
 		return NULL;
-	}
 
-	BUG_ON(atlas_recover_rq->curr);
-	BUG_ON(!atlas_recover_rq->rb_leftmost_job);
+	BUG_ON(!recover_rq->rb_leftmost_job);
 
-	job = pick_first_job(atlas_recover_rq->rb_leftmost_job);
+	job = pick_first_job(recover_rq->rb_leftmost_job);
 
 	for (; job && !task_on_rq_queued(job->tsk); job = pick_next_job(job)) {
 		struct task_struct *tsk = job->tsk;
@@ -328,16 +300,18 @@ pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 	if (!job)
 		return NULL;
 
+	put_prev_task(rq, prev);
+
 	atlas_debug(PICK_NEXT_TASK, JOB_FMT " to run.", JOB_ARG(job));
 
-	atlas_recover_rq->curr = &job->tsk->atlas;
-	atlas_recover_rq->curr->job = job;
-	update_stats_curr_start(rq, atlas_recover_rq->curr);
+	recover_rq->curr = &job->tsk->atlas;
+	recover_rq->curr->job = job;
+	update_stats_curr_start(rq, recover_rq->curr);
 
-	WARN(!has_execution_time_left(atlas_recover_rq->curr),
+	WARN(!has_execution_time_left(job),
 	     JOB_FMT " has no execution time left\n", JOB_ARG(job));
 
-	setup_rq_timer(atlas_recover_rq, job);
+	setup_rq_timer(recover_rq, job);
 
 	return job->tsk;
 }
@@ -347,7 +321,7 @@ static void set_curr_task_atlas_recover(struct rq *rq)
 	struct task_struct *p = rq->curr;
 	struct sched_atlas_entity *se = &p->atlas;
 	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
-	
+
 	atlas_debug(SET_CURR_TASK, "pid=%d", p->pid);
 	update_stats_curr_start(rq, se);
 

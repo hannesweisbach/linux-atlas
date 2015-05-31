@@ -61,11 +61,6 @@ static inline int job_before(const struct atlas_job *const lhs,
 	return ktime_compare(lhs->deadline, rhs->deadline) < 0;
 }
 
-static inline int has_execution_time_left(const struct sched_atlas_entity *se)
-{
-	return !ktime_equal(ktime_set(0, 0), se->job->sexectime);
-}
-
 static inline struct task_struct *
 task_of(const struct sched_atlas_entity const *se)
 {
