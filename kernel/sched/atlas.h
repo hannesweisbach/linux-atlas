@@ -29,9 +29,8 @@ enum atlas_timer_target {
 
 struct atlas_rq {
 	struct sched_atlas_entity *curr;
-	struct rb_root     tasks_timeline;
-	struct rb_node *rb_leftmost_se;
-	struct rb_root     jobs;
+	struct rb_root jobs;
+	struct rb_node *rb_leftmost_job;
 	raw_spinlock_t			lock;
 	int nr_runnable;
 	int in_slack;
@@ -48,13 +47,10 @@ struct atlas_rq {
 
 struct atlas_recover_rq {
 	struct sched_atlas_entity *curr;
-	struct rb_root     tasks_timeline;
-	struct rb_node     *rb_leftmost_se;
-	struct rb_root     jobs;
+	struct rb_root jobs;
+	struct rb_node *rb_leftmost_job;
 	int nr_runnable;
 	struct hrtimer timer;
-	unsigned long flags;
-	unsigned long pending_work; //used in core to use callback in atlas
 };
 
 #endif /* _SCHED_ATLAS_INTERNAL_H */

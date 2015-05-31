@@ -11,47 +11,44 @@
 #include "sched.h"
 #include "atlas_common.h"
 
-#define do_for_job(job_id, atlas_rq, job)                                      \
-	if (0) {                                                               \
-	unlock__:                                                              \
-		;                                                              \
-		unlock_runqueues_irqrestore();                                 \
-	}                                                                      \
-	else                                                                   \
-		while (1)                                                      \
-			if (1) {                                               \
-				int cpu;                                       \
-				lock_runqueues_irqsave();                      \
-				for_each_possible_cpu(cpu) /*online?*/         \
-				{                                              \
-					struct rq *rq = cpu_rq(cpu);           \
-					atlas_rq = &rq->atlas;                 \
-					for (job = pick_first_job(atlas_rq);   \
-					     job; job = pick_next_job(job)) {  \
-						if (job->id == job_id) {       \
-							goto loop_begin;       \
-						}                              \
-					}                                      \
-				}                                              \
-				job = NULL;                                    \
-				printk_deferred(KERN_INFO "%s(%d): ATLAS job " \
-							  "%llx not found.\n", \
-						__func__, __LINE__, job_id);   \
-				goto unlock__;                                 \
-			}                                                      \
-			else                                                   \
-				while (1)                                      \
-					if (1) {/*terminated by break */       \
-						goto unlock__;                 \
-					}                                      \
-					else                                   \
-						while (1)                      \
-							if (1) {/*terminated   \
-								   */          \
-								/* normally */ \
-								goto unlock__; \
-							}                      \
-							else                   \
+#define do_for_job(job_id, atlas_rq, job)                                                \
+	if (0) {                                                                         \
+	unlock__:                                                                        \
+		;                                                                        \
+		unlock_runqueues_irqrestore();                                           \
+	} else                                                                           \
+		while (1)                                                                \
+			if (1) {                                                         \
+				int cpu;                                                 \
+				lock_runqueues_irqsave();                                \
+				for_each_possible_cpu(cpu) /*online?*/                   \
+				{                                                        \
+					struct rq *rq = cpu_rq(cpu);                     \
+					atlas_rq = &rq->atlas;                           \
+					for (job = pick_first_job(                       \
+							     atlas_rq->rb_leftmost_job); \
+					     job; job = pick_next_job(job)) {            \
+						if (job->id == job_id) {                 \
+							goto loop_begin;                 \
+						}                                        \
+					}                                                \
+				}                                                        \
+				job = NULL;                                              \
+				printk_deferred(KERN_INFO "%s(%d): ATLAS job "           \
+							  "%llx not found.\n",           \
+						__func__, __LINE__, job_id);             \
+				goto unlock__;                                           \
+			} else                                                           \
+				while (1)                                                \
+					if (1) {/*terminated by break */                 \
+						goto unlock__;                           \
+					} else                                           \
+						while (1)                                \
+							if (1) {/*terminated             \
+								   */                    \
+								/* normally */           \
+								goto unlock__;           \
+							} else                           \
 							loop_begin:
 
 static u32 atlas_debug_flags[NUM_FLAGS];

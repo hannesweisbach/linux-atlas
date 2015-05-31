@@ -196,7 +196,7 @@ static inline void job_dealloc(struct atlas_job *job)
 
 static void insert_job_into_tree(struct rb_root *root,
 				 struct atlas_job *const job,
-				 struct rb_node **leftmost_job)
+				 struct rb_node **const leftmost_job)
 {
 	struct rb_node **link = &root->rb_node;
 	struct rb_node *parent = NULL;
@@ -225,29 +225,20 @@ static void insert_job_into_tree(struct rb_root *root,
 		*leftmost_job = &job->rb_node;
 }
 
-static void remove_job_from_tree(struct atlas_job *const job)
+void remove_job_from_tree(struct atlas_job *const job,
+			  struct rb_node **const rb_leftmost_job)
 {
+	BUG_ON(!job);
+	BUG_ON(!rb_leftmost_job);
+	BUG_ON(!*rb_leftmost_job);
+
+	if (&job->rb_node == *rb_leftmost_job)
+		*rb_leftmost_job = rb_next(*rb_leftmost_job);
+
 	rb_erase(&job->rb_node, job->root);
 	RB_CLEAR_NODE(&job->rb_node);
 	job->root = NULL;
 }
-
-static void enqueue_entity(struct atlas_rq *atlas_rq,
-			   struct sched_atlas_entity *se)
-{
-	enqueue_entity_(&atlas_rq->tasks_timeline, se,
-			&atlas_rq->rb_leftmost_se);
-}
-
-static void dequeue_entity(struct atlas_rq *atlas_rq,
-			   struct sched_atlas_entity *se)
-{
-	dequeue_entity_(&atlas_rq->tasks_timeline, se,
-			&atlas_rq->rb_leftmost_se);
-}
-
-
-
 
 /*
  **********************************************************
@@ -346,7 +337,7 @@ static void stop_slack_timer(struct atlas_rq *atlas_rq)
 
 		atlas_debug(TIMER, "Slack timer stopped for " JOB_FMT
 				   " adding %d tasks",
-			    JOB_ARG(pick_first_job(atlas_rq)),
+			    JOB_ARG(pick_first_job(atlas_rq->rb_leftmost_job)),
 			    atlas_rq->in_slack);
 	}
 
@@ -396,9 +387,6 @@ static inline void stop_timer(struct atlas_rq *atlas_rq)
 	// PENDING_STOP_CFS_ADVANCED));
 }
 
-static void update_curr_atlas(struct rq *);
-
-
 static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 {
 	unsigned long flags;
@@ -419,7 +407,8 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 			BUG_ON(rq->curr->sched_class != &atlas_sched_class);
 			break;
 		case ATLAS_SLACK: {
-			struct atlas_job *job = pick_first_job(atlas_rq);
+			struct atlas_job *job = pick_first_job(
+					atlas_rq->rb_leftmost_job);
 
 			if (!job) {
 				atlas_debug_(TIMER, "End of SLACK with no job; "
@@ -662,12 +651,11 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	raw_spin_lock_init(&atlas_rq->lock);
 
 	atlas_rq->curr = NULL;
-	atlas_rq->tasks_timeline = RB_ROOT;
-	atlas_rq->rb_leftmost_se = NULL;
+	atlas_rq->jobs = RB_ROOT;
+	atlas_rq->rb_leftmost_job = NULL;
 	atlas_rq->nr_runnable = 0;
 	atlas_rq->in_slack = 0;
 	atlas_rq->needs_update = 0;
-	atlas_rq->jobs = RB_ROOT;
 
 	hrtimer_init(&atlas_rq->timer, CLOCK_MONOTONIC,
 		     HRTIMER_MODE_ABS_PINNED);
@@ -804,7 +792,6 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 
 	if (atlas_rq->curr != se) {
 		update_stats_wait_start(rq, &p->se);
-		enqueue_entity(atlas_rq, se);
 	}
     
 	se->on_rq = 1;
@@ -828,14 +815,13 @@ static void dequeue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 {
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se = &p->atlas;
-	
+
 	update_curr_atlas(rq);
 
 	if (atlas_rq->curr == se) {
 		atlas_rq->curr = NULL;
 	} else {
 		update_stats_wait_end(rq, &p->se);
-		dequeue_entity(atlas_rq, se);
 	}
 
 	se->on_rq = 0;
@@ -848,7 +834,8 @@ static void dequeue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 		    atlas_rq->nr_runnable);
 
 	if (atlas_rq->timer_target == ATLAS_NONE && !atlas_rq->nr_runnable) {
-		struct atlas_job *job = pick_first_job(atlas_rq);
+		struct atlas_job *job =
+				pick_first_job(atlas_rq->rb_leftmost_job);
 		if (job)
 			start_slack_timer(atlas_rq, job, slacktime(job));
 	}
@@ -916,7 +903,6 @@ preempt:
 
 static void cleanup_rq(struct atlas_rq *atlas_rq);
 static void handle_deadline_misses(struct atlas_rq *atlas_rq);
-static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev);
 
 void atlas_handle_slack(struct rq *rq)
 {
@@ -939,10 +925,12 @@ void atlas_handle_slack(struct rq *rq)
 	}
 }
 
+static void erase_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job);
+
 static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 {
 	unsigned long flags;
-	struct atlas_job *curr = pick_first_job(atlas_rq);
+	struct atlas_job *curr = pick_first_job(atlas_rq->rb_leftmost_job);
 	ktime_t now = ktime_get();
 
 	assert_raw_spin_locked(&rq_of(atlas_rq)->lock);
@@ -1041,7 +1029,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	 * walking the se tree is probably better or at least as much work as
 	 * wlaking the job tree, because #(jobs) <= #(tasks)
 	 */
-	for (job = pick_first_job(atlas_rq);
+	for (job = pick_first_job(atlas_rq->rb_leftmost_job);
 	     job && !task_on_rq_queued(job->tsk); job = pick_next_job(job)) {
 		struct task_struct *tsk = job->tsk;
 		if (!task_on_rq_queued(tsk)) {
@@ -1094,8 +1082,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 			job->tsk->policy == SCHED_ATLAS);
 		if (job->tsk->policy != SCHED_ATLAS)
 			atlas_set_scheduler(rq, job->tsk, SCHED_ATLAS);
-
-		dequeue_entity(atlas_rq, se);
 	} else if (se->job != job) {
 		/* Account properly, if the same task runs, but with a
 		 * different job
@@ -1133,7 +1119,6 @@ static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 	if (se->on_rq) {
 		update_curr_atlas(rq);
 		update_stats_wait_start(rq, &prev->se);
-		enqueue_entity(atlas_rq, se);
 	}
 
 	atlas_rq->curr = NULL;
@@ -1160,7 +1145,6 @@ static void set_curr_task_atlas(struct rq *rq)
 
 	if(se->on_rq) {
 		update_stats_wait_end(rq, se);
-		dequeue_entity(atlas_rq, atlas_se);
 	}
 	update_stats_curr_start(rq, atlas_se);
 
@@ -1237,7 +1221,7 @@ static void check_admission_plan(struct atlas_rq *atlas_rq) {
 	assert_raw_spin_locked(&atlas_rq->lock);
 	//__debug_jobs(atlas_rq);
 	
-	prev = pick_first_job(atlas_rq);
+	prev = pick_first_job(atlas_rq->rb_leftmost_job);
 
 	if (!prev)
 		return;
@@ -1350,7 +1334,7 @@ static void assign_rq_job(struct atlas_rq *atlas_rq,
 	/*
 	 * needed to decide whether to reset slack
 	 */
-	first = pick_first_job(atlas_rq);
+	first = pick_first_job(atlas_rq->rb_leftmost_job);
 	
 	link = &atlas_rq->jobs.rb_node;
 	
@@ -1425,7 +1409,8 @@ static void assign_rq_job(struct atlas_rq *atlas_rq,
 	 */
 	if (first &&
 	    ktime_compare(job_start(first),
-			  job_start(pick_first_job(atlas_rq))) > 0) {
+			  job_start(pick_first_job(
+					  atlas_rq->rb_leftmost_job))) > 0) {
 		resched_cpu(cpu_of(rq_of(atlas_rq)));
 	}
 
@@ -1437,7 +1422,7 @@ static void assign_rq_job(struct atlas_rq *atlas_rq,
 /*
  * atlas_rq->lock must be hold!
  */
-void erase_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job)
+static void erase_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job)
 {	
 	// a job is removed from the rq from next and also in
 	// pick_next_task on cleanup, so there is a race condition
@@ -1447,6 +1432,9 @@ void erase_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job)
 	assert_raw_spin_locked(&atlas_rq->lock);
 	
 	if (likely(job_in_rq(job))) {
+		if (&job->rb_node == atlas_rq->rb_leftmost_job)
+			atlas_rq->rb_leftmost_job =
+					rb_next(atlas_rq->rb_leftmost_job);
 		ktime_t tmp = job->sexectime;
 		job->sexectime = ktime_set(0,0);
 		close_gaps(job, UPDATE_EXEC_TIME);
@@ -1462,7 +1450,7 @@ void erase_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job)
 
 static void cleanup_rq(struct atlas_rq *atlas_rq)
 {
-	struct atlas_job *curr = pick_first_job(atlas_rq);
+	struct atlas_job *curr = pick_first_job(atlas_rq->rb_leftmost_job);
 	ktime_t now = ktime_get();
 
 	assert_raw_spin_locked(&atlas_rq->lock);
@@ -1474,6 +1462,8 @@ static void cleanup_rq(struct atlas_rq *atlas_rq)
 		curr = next;
 	}
 }
+
+static void destroy_first_job(struct task_struct *tsk);
 
 /* 
  * free pending jobs of a killed task
@@ -1612,7 +1602,8 @@ static void schedule_job(struct atlas_job *const job)
 		struct atlas_job *prev = NULL;
 		raw_spin_lock(&atlas_rq->lock);
 
-		insert_job_into_tree(&atlas_rq->jobs, job, NULL);
+		insert_job_into_tree(&atlas_rq->jobs, job,
+				     &atlas_rq->rb_leftmost_job);
 
 		/* Move from the next task backwards to adjust scheduled
 		 * deadlines and execution times.
@@ -1716,7 +1707,7 @@ static void destroy_first_job(struct task_struct *tsk)
 		}
 
 		atlas_job = job->root == &atlas_rq->jobs;
-		remove_job_from_tree(job);
+		remove_job_from_tree(job, &atlas_rq->rb_leftmost_job);
 
 		if (atlas_job && curr) {
 			struct atlas_job *prev = pick_prev_job(curr);

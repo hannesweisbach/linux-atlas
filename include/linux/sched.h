@@ -1275,8 +1275,6 @@ struct sched_entity {
 
 #ifdef CONFIG_ATLAS
 struct sched_atlas_entity {
-	struct rb_node run_node; /*for normal operation*/
-	// struct list_head   run_list;  ??
 	struct list_head list;   /*for initialization*/
 	unsigned int state;
 	unsigned long flags;
