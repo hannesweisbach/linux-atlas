@@ -1476,38 +1476,37 @@ void exit_atlas(struct task_struct *p)
 	unsigned long flags;
 	struct rq *const rq = task_rq_lock(p, &flags);
 	struct atlas_rq *const atlas_rq = &rq->atlas;
-	struct atlas_job *job, *tmp;
-
-	if (cpu_of(rq) != 0)
-		return;
-
-	hrtimer_cancel(&p->atlas.timer);
-	
-	//debug_rq(rq);
-	//debug_task(p);
+	const struct atlas_recover_rq *const recover_rq = &rq->atlas_recover;
 
 	BUG_ON(in_interrupt());
-	//remove jobs from run queue
-	if ((job = p->atlas.job)) {
-		p->atlas.job = NULL;
-		put_job(job);
-		raw_spin_lock(&rq->atlas.lock);
-		erase_rq_job(atlas_rq, job);
-		raw_spin_unlock(&rq->atlas.lock);
+	BUG_ON(p->policy == SCHED_ATLAS &&
+	       p->sched_class != &atlas_sched_class);
+	BUG_ON(p->policy == SCHED_ATLAS_RECOVER &&
+	       p->sched_class != &atlas_recover_sched_class);
+	BUG_ON(p->policy == SCHED_NORMAL &&
+	       p->sched_class != &fair_sched_class);
+
+	hrtimer_cancel(&p->atlas.timer);
+
+	if (p == atlas_rq->slack_task) {
+		preempt_disable();
+		stop_timer(atlas_rq);
+		atlas_rq->slack_task = NULL;
+		preempt_enable();
 	}
 
-	raw_spin_lock(&atlas_rq->lock);
-	spin_lock(&p->atlas.jobs_lock);
-	list_for_each_entry_safe(job, tmp, &p->atlas.jobs, list) {
-		erase_rq_job(atlas_rq, job);
-
-		erase_task_job(job);
+	if (p->policy == SCHED_ATLAS || p->policy == SCHED_ATLAS_RECOVER) {
+		printk(KERN_EMERG "Switching task %s/%d back to CFS", p->comm,
+		       task_pid_vnr(p));
+		atlas_set_scheduler(task_rq(p), p, SCHED_NORMAL);
 	}
-	spin_unlock(&p->atlas.jobs_lock);
-	raw_spin_unlock(&atlas_rq->lock);
 
-	//debug_rq(rq);
-	//debug_task(p);
+	for (; !list_empty(&p->atlas.jobs);)
+		destroy_first_job(p);
+
+	printk(KERN_EMERG "Task %s/%d in %s is exiting (%d/%d/%d)\n", p->comm,
+	       task_pid_vnr(p), sched_name(p->policy), rq->nr_running,
+	       atlas_rq->nr_runnable, recover_rq->nr_runnable);
 
 	task_rq_unlock(rq, p, &flags);
 }
