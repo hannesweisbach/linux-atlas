@@ -1780,7 +1780,7 @@ SYSCALL_DEFINE0(atlas_next)
 	 * encounter no jobs present and an infinite scheduling loop would be
 	 * the result.
 	 */
-	if (next_job && current->policy != SCHED_NORMAL)
+	if (!next_job && current->policy != SCHED_NORMAL)
 		atlas_set_scheduler(rq, current, SCHED_NORMAL);
 
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
