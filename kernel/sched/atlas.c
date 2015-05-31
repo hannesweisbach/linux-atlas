@@ -1680,9 +1680,12 @@ static void destroy_first_job(struct task_struct *tsk)
 
 	if (job_in_rq(job)) {
 		struct atlas_rq *atlas_rq = &task_rq(tsk)->atlas;
+		struct atlas_recover_rq *recover_rq =
+				&task_rq(tsk)->atlas_recover;
 		struct atlas_job *curr;
+		struct rb_node **leftmost = NULL;
 		unsigned long flags;
-		int atlas_job;
+		int atlas_job = job->root == &atlas_rq->jobs;
 
 		BUG_ON(!job->root);
 
@@ -1706,8 +1709,12 @@ static void destroy_first_job(struct task_struct *tsk)
 				curr->sdeadline = curr->deadline;
 		}
 
-		atlas_job = job->root == &atlas_rq->jobs;
-		remove_job_from_tree(job, &atlas_rq->rb_leftmost_job);
+		if (job->root == &atlas_rq->jobs)
+			leftmost = &atlas_rq->rb_leftmost_job;
+		else if (job->root == &recover_rq->jobs)
+			leftmost = &recover_rq->rb_leftmost_job;
+
+		remove_job_from_tree(job, leftmost);
 
 		if (atlas_job && curr) {
 			struct atlas_job *prev = pick_prev_job(curr);
