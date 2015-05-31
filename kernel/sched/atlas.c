@@ -326,8 +326,9 @@ static inline void start_job_timer(struct atlas_rq *atlas_rq,
 	if (ktime_compare(timeout, job->sdeadline) > 0)
 		timeout = job->sdeadline;
 
-	atlas_debug(TIMER, "Setup job timer for " JOB_FMT " to %lld",
-		    JOB_ARG(job), ktime_to_ms(timeout));
+	atlas_debug(TIMER, "Setup job timer for " JOB_FMT " to %lld (+%lld)",
+		    JOB_ARG(job), ktime_to_ms(timeout),
+		    ktime_to_ms(job->sexectime));
 
 	__setup_rq_timer(atlas_rq, timeout);
 }
@@ -342,13 +343,14 @@ static void stop_slack_timer(struct atlas_rq *atlas_rq)
 		account_running_slack_stop(atlas_rq);
 		atlas_rq->timer_target = ATLAS_NONE;
 		atlas_rq->slack_task = NULL;
+
+		atlas_debug(TIMER, "Slack timer stopped for " JOB_FMT
+				   " adding %d tasks",
+			    JOB_ARG(pick_first_job(atlas_rq)),
+			    atlas_rq->in_slack);
 	}
 
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
-
-	atlas_debug(TIMER,
-		    "Slack timer stopped for " JOB_FMT " adding %d tasks",
-		    JOB_ARG(pick_first_job(atlas_rq)), atlas_rq->in_slack);
 }
 
 static void stop_job_timer(struct atlas_rq *atlas_rq)
@@ -403,10 +405,13 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 	struct atlas_rq *atlas_rq = container_of(timer, struct atlas_rq, timer);
 	struct rq *rq = rq_of(atlas_rq);
 
+	sched_log("Timer: %s",
+		  atlas_rq->timer_target == ATLAS_JOB
+				  ? "JOB"
+				  : atlas_rq->timer_target == ATLAS_SLACK
+						    ? "SLACK"
+						    : "BUG");
 
-	sched_log("Timer: %s", atlas_rq->timer_target == ATLAS_JOB ? "JOB" :
-						   atlas_rq->timer_target == ATLAS_SLACK ? "SLACK" : "BUG");
-	
 	switch (atlas_rq->timer_target) {
 		case ATLAS_JOB:
 			atlas_debug_(TIMER, "Deadline for " JOB_FMT,
@@ -508,9 +513,9 @@ void atlas_set_scheduler(struct rq *rq, struct task_struct *p, int policy)
 	queued = task_on_rq_queued(p);
 	running = task_current(rq, p);
 
-	atlas_debug(SWITCH_SCHED, "pid=%d from %s to %s, on_rq=%d, running=%d",
-		    p->pid, sched_name(p->policy), sched_name(policy), queued,
-		    running);
+	atlas_debug(SWITCH_SCHED, "Task %s/%d from %s to %s%s%s", p->comm,
+		    task_pid_vnr(p), sched_name(p->policy), sched_name(policy),
+		    queued ? ", on RQ" : "", running ? ", running" : "");
 
 	if (queued) {
 		update_rq_clock(rq);
@@ -773,8 +778,10 @@ static void update_curr_atlas(struct rq *rq)
 		if (unlikely(!job))
 			return;
 
-		atlas_debug(ADAPT_SEXEC, "Accounting %lldus to " JOB_FMT,
-			    delta_exec / 1000, JOB_ARG(job));
+		if (delta_exec > 1000 * 10)
+			atlas_debug(ADAPT_SEXEC,
+				    "Accounting %lldus to " JOB_FMT,
+				    delta_exec / 1000, JOB_ARG(job));
 
 		assert_raw_spin_locked(&rq->lock);
 		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
@@ -793,8 +800,6 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se = &p->atlas;
 
-	atlas_debug(ENQUEUE, "curr %p, se: %p", atlas_rq->curr, se);
-
 	update_curr_atlas(rq);
 
 	if (atlas_rq->curr != se) {
@@ -807,26 +812,10 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
     
     add_nr_running(rq, 1);
 
-	/*
-	 * The previously calculated slack time depends on the first
-	 * ready job in the rb tree. If the new entity is that one with the
-	 * nearest deadline the old slacktime might be wrong.
-	 * 
-	 * - check_preempt_curr_atlas is called after the enqueue
-	 */
-	//sched_log("ENQ: W=%d S=%d f=%d",
-	//	flags & ENQUEUE_WAKEUP, in_slacktime(atlas_rq), pick_first_entity(atlas_rq) == se);
-
-	if ( flags & ENQUEUE_WAKEUP &&
-			in_slacktime(atlas_rq) &&
-			pick_first_entity(atlas_rq) == se )
-	{
-		sched_log("ENQ: reset timer");
-		stop_timer(atlas_rq);
-		BUG_ON(atlas_rq->slack_task && !in_slacktime(atlas_rq));
-		//enqueue calls also check_preempt -> reschedule flag already set,
-		//because of higher scheduling-class
-	}
+	atlas_debug(ENQUEUE, JOB_FMT "%s%s (%d/%d)", JOB_ARG(se->job),
+		    (flags & ENQUEUE_WAKEUP) ? " (Wakeup)" : "",
+		    (flags & ENQUEUE_WAKING) ? " (Waking)" : "", rq->nr_running,
+		    atlas_rq->nr_runnable);
 }
 
 
@@ -853,6 +842,11 @@ static void dequeue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 	atlas_rq->nr_runnable--;
 	sub_nr_running(rq, 1);
 
+	atlas_debug(DEQUEUE, "Task '%s' (%d) on cpu %d%s (%d/%d)", p->comm,
+		    p->pid, task_cpu(p),
+		    (flags & DEQUEUE_SLEEP) ? " (sleep)" : "", rq->nr_running,
+		    atlas_rq->nr_runnable);
+
 	if (atlas_rq->timer_target == ATLAS_NONE && !atlas_rq->nr_runnable) {
 		struct atlas_job *job = pick_first_job(atlas_rq);
 		if (job)
@@ -878,14 +872,13 @@ static void check_preempt_curr_atlas(struct rq *rq, struct task_struct *p, int f
 	atlas_debug(CHECK_PREEMPT, "pid=%d", p->pid);
 	
 	if (unlikely(se == pse)) {
-		atlas_debug(CHECK_PREEMPT, "se == pse; pid=%d don't preempt curr->pid=%d",
-			p->pid, curr->pid);
+		atlas_debug(CHECK_PREEMPT, "Current task preempted by itself.");
 		return;
 	}
 	
 	if (test_tsk_need_resched(curr)) {
-		atlas_debug(CHECK_PREEMPT, "test_tsk_need_resched; pid=%d don't preempt curr->pid=%d",
-			p->pid, curr->pid);
+		atlas_debug(CHECK_PREEMPT,
+			    "Current task already marked for resched.");
 		return;
 	}
 
@@ -911,8 +904,11 @@ no_preempt:
 	return;
 	
 preempt:
-	atlas_debug(CHECK_PREEMPT, "pid=%d preempt curr->pid=%d",
-		p->pid, curr->pid);
+	atlas_debug(CHECK_PREEMPT, "Current task %s/%d should be "
+				   "preempted for task %s/%d because %s",
+		    curr->comm, task_pid_vnr(curr), p->comm, task_pid_vnr(p),
+		    cause);
+
 	resched_curr(rq);
 
 	return;
@@ -1128,8 +1124,9 @@ static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se = &prev->atlas;
 
-	atlas_debug(PUT_PREV_TASK, "pid=%d (on_rq=%d, timer_expired=%d)", prev->pid,
-		se->on_rq, (atlas_rq->flags & TIMER_EXPIRED) != 0);
+	atlas_debug(PUT_PREV_TASK, JOB_FMT "%s%s", JOB_ARG(se->job),
+		    se->on_rq ? ", on_rq" : "",
+		    (atlas_rq->flags & TIMER_EXPIRED) ? ", timer expired" : "");
 
 	stop_job_timer(atlas_rq);
 
@@ -1152,9 +1149,14 @@ static void set_curr_task_atlas(struct rq *rq)
 	struct task_struct *p = rq->curr;
 	struct sched_atlas_entity *atlas_se = &p->atlas;
 	struct atlas_rq *atlas_rq = &rq->atlas;
-	
-	atlas_debug(SET_CURR_TASK, "pid=%d", p->pid);
 	struct sched_entity *se = &rq->curr->se;
+
+	atlas_debug(SET_CURR_TASK, JOB_FMT, JOB_ARG(atlas_se->job));
+
+	if (atlas_rq->curr) {
+		atlas_debug(SET_CURR_TASK, "Previous: " JOB_FMT,
+			    JOB_ARG(atlas_rq->curr->job));
+	}
 
 	if(se->on_rq) {
 		update_stats_wait_end(rq, se);
@@ -1841,6 +1843,8 @@ SYSCALL_DEFINE0(atlas_next)
 		/*
 		 * pending signal
 		 */
+		atlas_debug(SYS_NEXT, "Signal in task %s/%d", current->comm,
+			    task_pid_vnr(current));
 		se->state = ATLAS_UNDEF;
 		__set_current_state(TASK_RUNNING);
 		ret = -EINTR;
@@ -1906,7 +1910,7 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 
 	if (copy_from_user(&lexectime, exectime, sizeof(struct timeval)) ||
 	    copy_from_user(&ldeadline, deadline, sizeof(struct timeval))) {
-		atlas_debug_(SYS_SUBMIT, "bad address");
+		atlas_debug_(SYS_SUBMIT, "Invalid struct timeval pointers.\n");
 		return -EFAULT;
 	}
 
