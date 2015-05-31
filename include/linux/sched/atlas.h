@@ -1,10 +1,14 @@
 #ifndef _SCHED_ATLAS_H
 #define _SCHED_ATLAS_H
 
+enum atlas_flags {
+	ATLAS_INIT = 0x1,
+};
+
 enum atlas_state {
-        ATLAS_UNDEF,
-        ATLAS_BLOCKED,
-        ATLAS_RUNNING,
+	ATLAS_UNDEF,
+	ATLAS_BLOCKED,
+	ATLAS_RUNNING,
 };
 
 static inline int atlas_task(struct task_struct *p)

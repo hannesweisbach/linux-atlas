@@ -640,7 +640,7 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->timer.function = &timer_rq_func;
 	atlas_rq->timer_target = ATLAS_NONE;
 
-	atlas_rq->flags = 0;
+	atlas_rq->flags = ATLAS_INIT;
 
 	atlas_rq->slack_task = NULL;
 	atlas_rq->skip_update_curr = 0;
@@ -1759,12 +1759,12 @@ SYSCALL_DEFINE0(atlas_next)
 
 	atlas_debug_(SYS_NEXT, "Job:  " JOB_FMT, JOB_ARG(se->job));
 
-	/* maybe I should check first_entry_or_null() for non-NULL and then
-	 * remove, instead of checking se->job… ?
+	/* When ATLAS_INIT is set, it is the first time next() is called, so no
+	 * job may be removed yet.
 	 */
-	if (se->job) {
+	if (!(se->flags & ATLAS_INIT))
 		destroy_first_job(current);
-	}
+	se->flags &= ~ATLAS_INIT;
 
 	/*
 	 * This is not correct. use first_entry_or_null to choose whether to
