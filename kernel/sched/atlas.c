@@ -1894,19 +1894,11 @@ out:
 
 SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 		exectime, struct timeval __user *, deadline)
-
 {
 	struct timeval lexectime;
 	struct timeval ldeadline;
 	struct atlas_job *job;
 	int ret = 0;
-
-	if (!exectime || !deadline || pid < 0) {
-		atlas_debug_(SYS_SUBMIT, "One is not valid: pid=%u, "
-					"exectime=0x%p, deadline=0x%p",
-			    pid, exectime, deadline);
-		return -EINVAL;
-	}
 
 	if (copy_from_user(&lexectime, exectime, sizeof(struct timeval)) ||
 	    copy_from_user(&ldeadline, deadline, sizeof(struct timeval))) {
