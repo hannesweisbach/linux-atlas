@@ -27,18 +27,6 @@ unsigned int sysctl_sched_atlas_advance_in_cfs = 0;
 
 #define MIGRATE_ON 0
 
-#define TIMER_EXPIRED                0x01
-
-/* pending work definitions */
-enum pending_work {
-	PENDING_STOP_CFS_ADVANCED = 0x01,
-	PENDING_START_CFS_ADVANCED = 0x02,
-	PENDING_JOB_TIMER = 0x04,
-	PENDING_MOVE_TO_CFS = 0x08,
-	PENDING_MOVE_TO_RECOVER = 0x10,
-	PENDING_MOVE_TO_ATLAS = 0x20,
-};
-
 enum update_exec_time {
 	UPDATE_EXEC_TIME,
 	NO_UPDATE_EXEC_TIME,
@@ -174,10 +162,6 @@ static inline void job_dealloc(struct atlas_job *job)
 				WARN(job == pos, JOB_FMT " is still in rb tree",
 				     JOB_ARG(job));
 			}
-
-			WARN(job == atlas_rq->cfs_job,
-			     JOB_FMT " is referenced by 'cfs_job'",
-			     JOB_ARG(job));
 		}
 	}
 
@@ -566,9 +550,6 @@ static void advance_thread_in_cfs(struct atlas_rq *atlas_rq) {
 	BUG_ON(atlas_rq->timer_target != ATLAS_SLACK);
 	atlas_rq->slack_task = p;
 	
-	//move p to cfs
-	p->atlas.flags |= ATLAS_CFS_ADVANCED;
-	
 	sched_log("advance: next thread p=%d", p->pid);
 	atlas_set_scheduler(rq_of(atlas_rq), p, SCHED_NORMAL);
 }
@@ -580,10 +561,7 @@ void atlas_cfs_blocked(struct rq *rq, struct task_struct *p) {
 	sched_log("advance_in_cfs: blocked");
 	BUG_ON(p->sched_class != &fair_sched_class);
 	BUG_ON(p->on_rq);
-	BUG_ON(!(p->atlas.flags & ATLAS_CFS_ADVANCED));
 
-	/* switch the scheduling class back to atlas */
-	p->atlas.flags &= ~ATLAS_CFS_ADVANCED;
 	atlas_set_scheduler(rq, p, SCHED_ATLAS);
 	atlas_rq->slack_task = NULL;
 
@@ -663,8 +641,6 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->timer_target = ATLAS_NONE;
 
 	atlas_rq->flags = 0;
-	atlas_rq->cfs_job = NULL;
-	atlas_rq->cfs_job_start = ktime_set(0, 0);
 
 	atlas_rq->slack_task = NULL;
 	atlas_rq->skip_update_curr = 0;
@@ -1091,7 +1067,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	}
 
 	se->job = job;
-	se->flags |= ATLAS_PENDING_JOBS;
 	atlas_rq->curr = se;
 
 	atlas_debug(PICK_NEXT_TASK, JOB_FMT " to run.",
@@ -1110,9 +1085,8 @@ static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se = &prev->atlas;
 
-	atlas_debug(PUT_PREV_TASK, JOB_FMT "%s%s", JOB_ARG(se->job),
-		    se->on_rq ? ", on_rq" : "",
-		    (atlas_rq->flags & TIMER_EXPIRED) ? ", timer expired" : "");
+	atlas_debug(PUT_PREV_TASK, JOB_FMT "%s", JOB_ARG(se->job),
+		    se->on_rq ? ", on_rq" : "");
 
 	stop_job_timer(atlas_rq);
 
@@ -1561,7 +1535,6 @@ enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer)
 			&se->jobs, struct atlas_job, list);
 
 	WARN_ON(!job);
-	se->flags |= ATLAS_DEADLINE;
 
 	atlas_debug_(TIMER, JOB_FMT " missed its deadline ", JOB_ARG(job));
 
@@ -1778,9 +1751,6 @@ SYSCALL_DEFINE0(atlas_next)
 	sched_log("NEXT pid=%d", current->pid);
 	
 	stop_timer(atlas_rq);
-
-	se->flags &= ~ATLAS_DEADLINE;
-	se->flags &= ~ATLAS_EXECTIME;
 	
 	if (current->sched_class == &atlas_sched_class) {
 		update_rq_clock(rq);
