@@ -629,6 +629,7 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->curr = NULL;
 	atlas_rq->jobs = RB_ROOT;
 	atlas_rq->rb_leftmost_job = NULL;
+	atlas_rq->nr_jobs = 0;
 	atlas_rq->nr_runnable = 0;
 	atlas_rq->in_slack = 0;
 	atlas_rq->needs_update = 0;
@@ -638,7 +639,6 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->timer.function = &timer_rq_func;
 	atlas_rq->timer_target = ATLAS_NONE;
 
-	atlas_rq->flags = ATLAS_INIT;
 
 	atlas_rq->slack_task = NULL;
 	atlas_rq->skip_update_curr = 0;
@@ -917,6 +917,7 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 			    JOB_ARG(curr), ktime_to_ns(now));
 		BUG_ON(curr->root != &atlas_rq->jobs);
 		remove_job_from_tree(curr, &atlas_rq->rb_leftmost_job);
+		--atlas_rq->nr_jobs;
 		/* TODO: put the erased job into the Recover job tree */
 		{
 			/*
@@ -1350,6 +1351,7 @@ static void schedule_job(struct atlas_job *const job)
 
 		insert_job_into_tree(&atlas_rq->jobs, job,
 				     &atlas_rq->rb_leftmost_job);
+		++atlas_rq->nr_jobs;
 
 		/* Move from the next task backwards to adjust scheduled
 		 * deadlines and execution times.
@@ -1455,10 +1457,12 @@ static void destroy_first_job(struct task_struct *tsk)
 				curr->sdeadline = curr->deadline;
 		}
 
-		if (job->root == &atlas_rq->jobs)
+		if (job->root == &atlas_rq->jobs) {
 			leftmost = &atlas_rq->rb_leftmost_job;
-		else if (job->root == &recover_rq->jobs)
+			--atlas_rq->nr_jobs;
+		} else if (job->root == &recover_rq->jobs) {
 			leftmost = &recover_rq->rb_leftmost_job;
+		}
 
 		remove_job_from_tree(job, leftmost);
 
@@ -1529,13 +1533,10 @@ SYSCALL_DEFINE0(atlas_next)
 		update_curr_atlas(rq);
 	}
 
-	atlas_debug_(SYS_NEXT, "Job:  " JOB_FMT, JOB_ARG(se->job));
-
-	/* When ATLAS_INIT is set, it is the first time next() is called, so no
-	 * job may be removed yet.
-	 */
-	if (!(se->flags & ATLAS_INIT))
+	if (!(se->flags & ATLAS_INIT)) {
+		BUG_ON(!atlas_rq->nr_jobs);
 		destroy_first_job(current);
+	}
 	se->flags &= ~ATLAS_INIT;
 
 	/*

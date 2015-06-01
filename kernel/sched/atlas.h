@@ -26,7 +26,8 @@ struct atlas_rq {
 	struct sched_atlas_entity *curr;
 	struct rb_root jobs;
 	struct rb_node *rb_leftmost_job;
-	raw_spinlock_t			lock;
+	unsigned nr_jobs;
+	raw_spinlock_t lock;
 	int nr_runnable;
 	int in_slack;
 	int needs_update;

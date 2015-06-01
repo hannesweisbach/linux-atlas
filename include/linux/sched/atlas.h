@@ -2,7 +2,7 @@
 #define _SCHED_ATLAS_H
 
 enum atlas_flags {
-	ATLAS_INIT = 0x1,
+	ATLAS_INIT,
 };
 
 enum atlas_state {
