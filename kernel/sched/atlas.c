@@ -32,8 +32,6 @@ enum update_exec_time {
 	NO_UPDATE_EXEC_TIME,
 };
 
-static void assign_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job);
-static inline void close_gaps(struct atlas_job *job, enum update_exec_time update);
 static void check_admission_plan(struct atlas_rq *atlas_rq);
 
 void sched_log(const char *fmt, ...)
@@ -695,9 +693,6 @@ void update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
 	}
 
 out:
-	// adapt admission plan
-	close_gaps(job, NO_UPDATE_EXEC_TIME);
-
 	check_admission_plan(atlas_rq);
 }
 
@@ -877,7 +872,6 @@ preempt:
 	return;
 }
 
-static void cleanup_rq(struct atlas_rq *atlas_rq);
 static void handle_deadline_misses(struct atlas_rq *atlas_rq);
 
 void atlas_handle_slack(struct rq *rq)
@@ -901,8 +895,6 @@ void atlas_handle_slack(struct rq *rq)
 	}
 }
 
-static void erase_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job);
-
 static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 {
 	unsigned long flags;
@@ -923,7 +915,8 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 		struct atlas_job *next = pick_next_job(curr);
 		atlas_debug(RUNQUEUE, "Removing " JOB_FMT " from the RQ (%lld)",
 			    JOB_ARG(curr), ktime_to_ns(now));
-		erase_rq_job(atlas_rq, curr);
+		BUG_ON(curr->root != &atlas_rq->jobs);
+		remove_job_from_tree(curr, &atlas_rq->rb_leftmost_job);
 		/* TODO: put the erased job into the Recover job tree */
 		{
 			/*
@@ -1216,226 +1209,6 @@ static void check_admission_plan(struct atlas_rq *atlas_rq) {
 static inline void resolve_collision(struct atlas_job *a,
 		struct atlas_job *b) {
 	a->sdeadline = job_start(b);
-}
-
-/*
- * close the gap between job a and b and
- * return 1 iff start of job a was moved forward
- */
-static inline int collapse_jobs(struct atlas_job *a,
-		struct atlas_job *b, enum update_exec_time update) {
-	
-	ktime_t start_a, start_b, end, move;
-	//can we move job a forward? if not, we are ready
-	if (likely(ktime_equal(a->deadline, a->sdeadline)))
-		return 0;
-	
-	//adapt the deadline of the job
-	start_a = job_start(a);
-	start_b = job_start(b);
-	end = ktime_min(a->deadline, start_b);
-
-	//end is either the start of the next job or the real deadline
-	
-	//save the movement
-	move = ktime_sub(end, a->sdeadline);
-	a->sdeadline = end;
-	
-	//no update of execution time possible/allowed?
-	if (update == NO_UPDATE_EXEC_TIME ||
-			likely(ktime_equal(a->exectime, a->sexectime))) {
-		//we moved the start
-		return 1;
-	}
-
-	//extend the execution time
-	a->sexectime = ktime_min(a->exectime, ktime_add(move, a->sexectime));
-
-	//did we moved the start?
-	if (ktime_equal(start_a, job_start(a))) {
-		return 0;
-	}
-
-	return 1;
-}
-
-/*
- * close gaps, called when a job is removed or when its exectime was updated
- *
- * note: - whenever updating the job's execution time,
- *         the wall clock time moves also forward. It's therefore
- *         illegal to extend the execution time of the previous jobs,
- *         otherwise exection time would be created that isn't available
- *       - it is completely admissible to extract the execution time
- *         of previous jobs whenever a job is removed from the execution
- *         plan
- */
-static inline void close_gaps(struct atlas_job *job, enum update_exec_time update) {
-	struct atlas_job *prev;
-	while((prev = pick_prev_job(job))) {
-		if (!collapse_jobs(prev, job, update))
-			break;
-		job = prev;
-	}
-
-}
-
-/*
- * calculate the gap between two jobs
- */
-static inline ktime_t calc_gap(struct atlas_job *a, struct atlas_job *b) {
-	ktime_t start = job_start(b);
-	ktime_t ret = ktime_sub(start, a->sdeadline);
-
-	BUG_ON(ktime_to_ns(ret) < 0);
-	return ret;
-}
-
-
-/*
- * must be called with atlas_rq locked
- */
-static void assign_rq_job(struct atlas_rq *atlas_rq,
-		struct atlas_job *job) {
-	
-	struct rb_node **link;
-	struct rb_node *parent = NULL;
-	struct atlas_job *entry, *next, *prev, *first;
-	
-	assert_raw_spin_locked(&atlas_rq->lock);
-	
-	cleanup_rq(atlas_rq);
-
-	/*
-	 * needed to decide whether to reset slack
-	 */
-	first = pick_first_job(atlas_rq->rb_leftmost_job);
-	
-	link = &atlas_rq->jobs.rb_node;
-	
-	while (*link) {
-		parent = *link;
-		entry = rb_entry(parent, struct atlas_job, rb_node);
-		
-		if (job_before(job, entry))
-			link = &parent->rb_left;
-		else
-			link = &parent->rb_right;
-	}
-	
-	rb_link_node(&job->rb_node, parent, link);
-	rb_insert_color(&job->rb_node, &atlas_rq->jobs);	
-	job->root = &atlas_rq->jobs;
-
-	/* fix the scheduled deadline of the new job*/
-	next = pick_next_job(job);
-	if (next && is_collision(job, next)) {
-		resolve_collision(job, next);
-	}
-
-	/*
-	 * FIXME: the scheduled deadline might be in the past
-	 * FIXME: what about overload situations: we might have to update the sexectime,
-	 *        for the moment, we skip that
-	 */
-
-	/* fix scheduled execution time */
-	
-	/*if (next == job) {
-		ktime_t diff = ktime_sub(job->sdeadline, now);
-		job->sexectime = ktime_min(diff, job->sexectime);
-	} else {
-		ktime_t max_exec = ktime_sub(job->sdeadline, now);
-		
-		//take care of the first job if now > start
-		//in this case we substract to much later on
-		ktime_t start = get_job_start(next);
-		if (ktime_cmp(now, start) == 1) {
-			ktime_t diff = ktime_sub(now, start);
-			max_exec = ktime_add(max_exec, diff);
-		}
-
-		while (next != job) {
-			max_exec = ktime_sub(max_exec, next->sexectime);
-			next = pick_next_job(next);
-		}
-
-		if (ktime_neg(max_exec)) {
-			job->sexectime = ktime_set(0,0);
-		} else {
-			job->sexectime = ktime_min(job->sexectime, max_exec);
-		}
-	}*/
-
-	/*
-	 * update the scheduled deadlines of the jobs placed before
-	 * the new job
-	 */
-	while ((prev = pick_prev_job(job))) {
-		if (!is_collision(prev, job))
-			break;
-		resolve_collision(prev, job);
-		job = prev;
-	}
-
-	/*
-	 * reset slack time iff start moved to the left
-	 *   - we have to initiate a reschedule on the target cpu
-	 */
-	if (first &&
-	    ktime_compare(job_start(first),
-			  job_start(pick_first_job(
-					  atlas_rq->rb_leftmost_job))) > 0) {
-		resched_cpu(cpu_of(rq_of(atlas_rq)));
-	}
-
-	atlas_rq->needs_update = 1;
-
-	check_admission_plan(atlas_rq);
-}
-
-/*
- * atlas_rq->lock must be hold!
- */
-static void erase_rq_job(struct atlas_rq *atlas_rq, struct atlas_job *job)
-{	
-	// a job is removed from the rq from next and also in
-	// pick_next_task on cleanup, so there is a race condition
-	if (unlikely(!job_in_rq(job)))
-		return;
-		
-	assert_raw_spin_locked(&atlas_rq->lock);
-	
-	if (likely(job_in_rq(job))) {
-		if (&job->rb_node == atlas_rq->rb_leftmost_job)
-			atlas_rq->rb_leftmost_job =
-					rb_next(atlas_rq->rb_leftmost_job);
-		ktime_t tmp = job->sexectime;
-		job->sexectime = ktime_set(0,0);
-		close_gaps(job, UPDATE_EXEC_TIME);
-		rb_erase(&job->rb_node, &atlas_rq->jobs);
-		RB_CLEAR_NODE(&job->rb_node);
-		job->sexectime = tmp;
-		job->root = NULL;
-		atlas_rq->needs_update = 1;
-	}	
-
-	check_admission_plan(atlas_rq);
-}
-
-static void cleanup_rq(struct atlas_rq *atlas_rq)
-{
-	struct atlas_job *curr = pick_first_job(atlas_rq->rb_leftmost_job);
-	ktime_t now = ktime_get();
-
-	assert_raw_spin_locked(&atlas_rq->lock);
-	while (curr && unlikely(job_missed_deadline(curr, now))) {
-		struct atlas_job *next = pick_next_job(curr);
-		atlas_debug(RUNQUEUE, "Removing Job %lld from the RQ (d: %lld)",
-			    curr->id, ktime_to_ms(curr->deadline));
-		erase_rq_job(atlas_rq, curr);
-		curr = next;
-	}
 }
 
 static void destroy_first_job(struct task_struct *tsk);
@@ -1745,8 +1518,6 @@ SYSCALL_DEFINE0(atlas_next)
 	rq = task_rq(current);
 	atlas_rq = &rq->atlas;
 
-	//remove the old job from the rq
-	
 	raw_spin_lock_irqsave(&rq->lock, flags);
 
 	sched_log("NEXT pid=%d", current->pid);
