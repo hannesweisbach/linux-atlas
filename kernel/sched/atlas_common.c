@@ -117,7 +117,11 @@ size_t print_atlas_job(const struct atlas_job const *job, char *buf,
 	if (!job) {
 		return scnprintf(buf, size, "no jobs\n");
 	} else {
-		return scnprintf(buf, size, JOB_FMT "\n", JOB_ARG(job));
+		s64 start = ktime_to_ms(
+				ktime_sub(job->sdeadline, job->sexectime));
+		return scnprintf(buf, size, "Job %5llu %8lld - %8lld %s\n",
+				 job->id, start, ktime_to_ms(job->sdeadline),
+				 !task_on_rq_queued(job->tsk) ? "blocked" : "");
 	}
 }
 
