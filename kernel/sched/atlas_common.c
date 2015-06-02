@@ -126,6 +126,7 @@ size_t print_timeline(const struct rb_root *jobs, char *buf, const size_t size,
 {
 	size_t offset = 0;
 	const struct atlas_job *job;
+	struct rq * rq;
 
 	{
 		struct rb_node *first = rb_first(jobs);
@@ -138,7 +139,12 @@ size_t print_timeline(const struct rb_root *jobs, char *buf, const size_t size,
 	if (!job)
 		return offset;
 
-	offset += scnprintf(&buf[offset], size - offset, "%s:\n", name);
+	rq = task_rq(job->tsk);
+	offset += scnprintf(&buf[offset], size - offset,
+			    "%s (%d/%d/%d) (%d/%d):\n", name, rq->nr_running,
+			    rq->atlas.nr_runnable,
+			    rq->atlas_recover.nr_runnable,
+			    job->tsk->atlas.nr_atlas_jobs, rq->atlas.nr_jobs);
 
 	for (; job; job = pick_next_job(job)) {
 		offset += print_atlas_job(job, &buf[offset], size - offset);
@@ -153,11 +159,6 @@ size_t print_rq(const struct rq *const rq, char *buf, size_t size)
 	size_t offset = 0;
 	const struct atlas_rq *const atlas = &rq->atlas;
 	const struct atlas_recover_rq *const recover = &rq->atlas_recover;
-
-	offset += scnprintf(&buf[offset], size - offset,
-			    "DEBUG RQ (%d/%d/%d)\n", rq->nr_running,
-			    rq->atlas.nr_runnable,
-			    rq->atlas_recover.nr_runnable);
 
 	offset += print_timeline(&atlas->jobs, &buf[offset], size - offset,
 				 "ATLAS");
