@@ -555,6 +555,9 @@ static void advance_thread_in_cfs(struct atlas_rq *atlas_rq) {
 void atlas_cfs_blocked(struct rq *rq, struct task_struct *p) {
 	struct atlas_rq *atlas_rq = &rq->atlas;
 
+	if (!sysctl_sched_atlas_advance_in_cfs)
+		return;
+
 	assert_raw_spin_locked(&rq->lock);
 	sched_log("advance_in_cfs: blocked");
 	BUG_ON(p->sched_class != &fair_sched_class);
