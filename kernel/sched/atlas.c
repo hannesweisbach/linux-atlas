@@ -820,59 +820,13 @@ static void yield_task_atlas(struct rq *rq)
     return;
 }
 
-/*
- * called when currently running task is scheduled by us
- * and another task is woken up
- */
-static void check_preempt_curr_atlas(struct rq *rq, struct task_struct *p, int flags)
+static void check_preempt_curr_atlas(struct rq *rq, struct task_struct *p,
+				     int flags)
 {
-	struct task_struct *curr = rq->curr;
-	struct sched_atlas_entity *se = &curr->atlas, *pse = &p->atlas;
-	int sub = (se->job != NULL), psub = (pse->job != NULL);
-	
-	atlas_debug(CHECK_PREEMPT, "pid=%d", p->pid);
-	
-	if (unlikely(se == pse)) {
-		atlas_debug(CHECK_PREEMPT, "Current task preempted by itself.");
-		return;
-	}
-	
-	if (test_tsk_need_resched(curr)) {
-		atlas_debug(CHECK_PREEMPT,
-			    "Current task already marked for resched.");
-		return;
-	}
-
-	
-	/* Bug if task is not scheduled by us */
-	BUG_ON(p->sched_class != &atlas_sched_class);
-		
-	/* if the new task has no job, preempt */
-	if (unlikely(!psub))
-		goto preempt;
-	
-	/* if the currently running task has no job, don't preempt */
-	if (unlikely(!sub))
-		goto no_preempt;
-
-	if (ktime_compare(pse->job->sdeadline, se->job->sdeadline) < 0)
-		goto preempt;
-	
-no_preempt:
-	atlas_debug(CHECK_PREEMPT, "pid=%d don't preempt curr->pid=%d",
-		p->pid, curr->pid);
-
-	return;
-	
-preempt:
-	atlas_debug(CHECK_PREEMPT, "Current task %s/%d should be "
-				   "preempted for task %s/%d because %s",
-		    curr->comm, task_pid_vnr(curr), p->comm, task_pid_vnr(p),
-		    cause);
+	BUG_ON(p->sched_class != &atlas_sched_class ||
+	       p->policy != SCHED_ATLAS);
 
 	resched_curr(rq);
-
-	return;
 }
 
 static void handle_deadline_misses(struct atlas_rq *atlas_rq);
