@@ -62,7 +62,7 @@ static inline int job_before(const struct atlas_job *const lhs,
 }
 
 static inline struct task_struct *
-task_of(const struct sched_atlas_entity const *se)
+atlas_task_of(const struct sched_atlas_entity const *se)
 {
 	return container_of(se, struct task_struct, atlas);
 }
