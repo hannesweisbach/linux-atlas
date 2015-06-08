@@ -464,6 +464,7 @@ void atlas_set_scheduler(struct rq *rq, struct task_struct *p, int policy)
 		return;
 	}
 
+	/* may grab non-irq protected spin_locks */
 	BUG_ON(in_interrupt());
 	assert_raw_spin_locked(&rq->lock);
 
@@ -490,7 +491,7 @@ void atlas_set_scheduler(struct rq *rq, struct task_struct *p, int policy)
 
 	if (queued) {
 		update_rq_clock(rq);
-		sched_info_queued(rq, p);
+		sched_info_dequeued(rq, p);
 		p->sched_class->dequeue_task(rq, p, 0);
 	}
 	if (running) {
