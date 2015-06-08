@@ -25,7 +25,7 @@ static inline struct rq *rq_of(struct atlas_recover_rq *atlas_recover_rq)
 static inline void update_stats_curr_start(struct rq *rq,
 					   struct sched_atlas_entity *se)
 {
-	task_of(se)->se.exec_start = rq_clock_task(rq);
+	atlas_task_of(se)->se.exec_start = rq_clock_task(rq);
 }
 
 static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
@@ -75,7 +75,7 @@ static void update_curr_atlas_recover(struct rq *rq)
 {
 	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
 	struct sched_atlas_entity *atlas_se = atlas_recover_rq->curr;
-	struct sched_entity *se = &task_of(atlas_se)->se;
+	struct sched_entity *se = &atlas_task_of(atlas_se)->se;
 	u64 now = rq_clock_task(rq);
 	u64 delta_exec;
 
@@ -94,7 +94,7 @@ static void update_curr_atlas_recover(struct rq *rq)
 	se->sum_exec_runtime += delta_exec;
 
 	{
-		struct task_struct *tsk = task_of(atlas_se);
+		struct task_struct *tsk = atlas_task_of(atlas_se);
 		cpuacct_charge(tsk, delta_exec);
 		account_group_exec_runtime(tsk, delta_exec);
 	}

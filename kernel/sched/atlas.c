@@ -542,7 +542,7 @@ static void advance_thread_in_cfs(struct atlas_rq *atlas_rq) {
 	
 	BUG_ON(!se);
 	
-	p = task_of(se);
+	p = atlas_task_of(se);
 	BUG_ON(!p->on_rq);
 	
 	BUG_ON(atlas_rq->timer_target != ATLAS_SLACK);
@@ -671,7 +671,7 @@ static void update_stats_wait_end(struct rq *rq, struct sched_entity *se)
 static inline void update_stats_curr_start(struct rq *rq,
 					   struct sched_atlas_entity *se)
 {
-	task_of(se)->se.exec_start = rq_clock_task(rq);
+	atlas_task_of(se)->se.exec_start = rq_clock_task(rq);
 }
 
 void update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
@@ -703,7 +703,7 @@ static void update_curr_atlas(struct rq *rq)
 {
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *atlas_se = atlas_rq->curr;
-	struct sched_entity *se = &task_of(atlas_se)->se;
+	struct sched_entity *se = &atlas_task_of(atlas_se)->se;
 	u64 now = rq_clock_task(rq);
 	u64 delta_exec;
 
@@ -723,7 +723,7 @@ static void update_curr_atlas(struct rq *rq)
 	se->sum_exec_runtime += delta_exec;
 
 	{
-		struct task_struct *tsk = task_of(atlas_se);
+		struct task_struct *tsk = atlas_task_of(atlas_se);
 		// trace_sched_stat_runtime(curr, delta_exec,
 		cpuacct_charge(tsk, delta_exec);
 		account_group_exec_runtime(tsk, delta_exec);
@@ -1023,7 +1023,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	atlas_debug(PICK_NEXT_TASK, JOB_FMT " to run.",
 		    JOB_ARG(atlas_rq->curr->job));
 
-	return task_of(atlas_rq->curr);
+	return atlas_task_of(atlas_rq->curr);
 
 out_notask:
 	atlas_rq->curr = NULL;
@@ -1262,7 +1262,7 @@ enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer)
 {
 	struct sched_atlas_entity *se =
 			container_of(timer, struct sched_atlas_entity, timer);
-	struct task_struct *p = task_of(se);
+	struct task_struct *p = atlas_task_of(se);
 	struct atlas_job *job = list_first_entry_or_null(
 			&se->jobs, struct atlas_job, list);
 
