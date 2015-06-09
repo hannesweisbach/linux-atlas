@@ -839,22 +839,8 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 			 * epsilon slack. this avoids migrating the task right
 			 * back into ATLAS
 			 */
-			struct task_struct *tsk = curr->tsk;
-			if (tsk->policy == SCHED_ATLAS) {
-				raw_spin_unlock_irqrestore(&atlas_rq->lock,
-							   flags);
-				if (ktime_compare(curr->sexectime,
-						  ktime_set(0, 30000)) > 0) {
-					atlas_set_scheduler(
-							task_rq(tsk), tsk,
-							SCHED_ATLAS_RECOVER);
-				} else {
-					atlas_set_scheduler(task_rq(tsk), tsk,
-							    SCHED_NORMAL);
-				}
-				raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-			}
-			if (tsk->policy == SCHED_ATLAS_RECOVER) {
+			if (ktime_compare(curr->sexectime,
+					  ktime_set(0, 30000)) > 0) {
 				struct rq *rq = rq_of(atlas_rq);
 				atlas_debug(RUNQUEUE,
 					    "Moving " JOB_FMT " to Recover RQ",
@@ -868,11 +854,26 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 						&rq->atlas_recover.jobs, curr,
 						&rq->atlas_recover
 								 .rb_leftmost_job);
+				//_insert_job_into_tree(
+				//		&rq->atlas_recover.recover_jobs,
+				//		curr);
+			} else {
+				/* TODO: add to CFS queue */
+				if (curr->tsk->policy != SCHED_NORMAL) {
+					raw_spin_unlock_irqrestore(
+							&atlas_rq->lock, flags);
+					atlas_set_scheduler(rq_of(atlas_rq),
+							    curr->tsk,
+							    SCHED_NORMAL);
+					raw_spin_lock_irqsave(&atlas_rq->lock,
+							      flags);
+			  }
 			}
 		}
 		curr = next;
 	}
 
+	BUG_ON(!rq_of(atlas_rq)->nr_running);
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 }
 
