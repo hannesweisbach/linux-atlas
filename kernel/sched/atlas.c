@@ -1628,14 +1628,14 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 
 	if (copy_from_user(&lexectime, exectime, sizeof(struct timeval)) ||
 	    copy_from_user(&ldeadline, deadline, sizeof(struct timeval))) {
-		atlas_debug_(SYS_SUBMIT, "Invalid struct timeval pointers.\n");
+		atlas_debug_(SYS_SUBMIT, "Invalid struct timeval pointers.");
 		return -EFAULT;
 	}
 
 	job = job_alloc(id, timeval_to_ktime(lexectime),
 			timeval_to_ktime(ldeadline));
 	if (!job) {
-		atlas_debug_(SYS_SUBMIT, "Could not allocate job structure.\n");
+		atlas_debug_(SYS_SUBMIT, "Could not allocate job structure.");
 		return -ENOMEM;
 	}
 
