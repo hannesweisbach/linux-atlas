@@ -618,7 +618,6 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->nr_jobs = 0;
 	atlas_rq->nr_runnable = 0;
 	atlas_rq->in_slack = 0;
-	atlas_rq->needs_update = 0;
 
 	hrtimer_init(&atlas_rq->timer, CLOCK_MONOTONIC,
 		     HRTIMER_MODE_ABS_PINNED);
@@ -932,8 +931,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 				atlas_set_scheduler(rq, tsk, SCHED_ATLAS);
 		}
 	}
-
-	atlas_rq->needs_update = 0;
 
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 
@@ -1474,7 +1471,6 @@ static void destroy_first_job(struct task_struct *tsk)
 		} else {
 		}
 
-		atlas_rq->needs_update = 1;
 		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 	}
 
