@@ -2159,6 +2159,8 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->atlas.on_recover_rq = 0;
 	p->atlas.job = NULL;
 	INIT_LIST_HEAD(&p->atlas.jobs);
+	p->atlas.nr_atlas_jobs = 0;
+	p->atlas.new_jobs = 0;
 	spin_lock_init(&p->atlas.jobs_lock);
 	hrtimer_init(&p->atlas.timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_PINNED);
 	p->atlas.timer.function = &atlas_timer_task_function;
