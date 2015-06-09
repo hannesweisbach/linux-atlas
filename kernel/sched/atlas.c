@@ -257,9 +257,8 @@ static inline void start_slack_timer(struct atlas_rq *atlas_rq,
 
 	slack = ktime_add(slack, ktime_get());
 
-	atlas_debug(TIMER, "Set slack timer for " JOB_FMT
-			   " to %lld; removing %d tasks",
-		    JOB_ARG(job), ktime_to_ms(slack), atlas_rq->in_slack);
+	atlas_debug(TIMER, "Set slack timer for " JOB_FMT " to %lld",
+		    JOB_ARG(job), ktime_to_ms(slack));
 
 	atlas_rq->slack_task = job->tsk;
 	atlas_rq->timer_target = ATLAS_SLACK;
@@ -298,10 +297,8 @@ static void stop_slack_timer(struct atlas_rq *atlas_rq)
 		atlas_rq->timer_target = ATLAS_NONE;
 		atlas_rq->slack_task = NULL;
 
-		atlas_debug(TIMER, "Slack timer stopped for " JOB_FMT
-				   " adding %d tasks",
-			    JOB_ARG(pick_first_job(atlas_rq->rb_leftmost_job)),
-			    atlas_rq->in_slack);
+		atlas_debug(TIMER, "Slack timer stopped for " JOB_FMT,
+			    JOB_ARG(pick_first_job(atlas_rq->rb_leftmost_job)));
 	}
 
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
@@ -374,13 +371,11 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 					atlas_rq->rb_leftmost_job);
 
 			if (!job) {
-				atlas_debug_(TIMER, "End of SLACK with no job; "
-						    "adding %d tasks",
-					     atlas_rq->in_slack);
+				atlas_debug_(TIMER,
+					     "End of SLACK with no job; ");
 			} else {
-				atlas_debug_(TIMER, "End of SLACK for " JOB_FMT
-						    " adding %d tasks.",
-					     JOB_ARG(job), atlas_rq->in_slack);
+				atlas_debug_(TIMER, "End of SLACK for " JOB_FMT,
+					     JOB_ARG(job));
 			}
 			add_nr_running(rq, 1);
 			atlas_rq->nr_runnable += 1;
@@ -617,13 +612,11 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->rb_leftmost_job = NULL;
 	atlas_rq->nr_jobs = 0;
 	atlas_rq->nr_runnable = 0;
-	atlas_rq->in_slack = 0;
 
 	hrtimer_init(&atlas_rq->timer, CLOCK_MONOTONIC,
 		     HRTIMER_MODE_ABS_PINNED);
 	atlas_rq->timer.function = &timer_rq_func;
 	atlas_rq->timer_target = ATLAS_NONE;
-
 
 	atlas_rq->slack_task = NULL;
 	atlas_rq->skip_update_curr = 0;
