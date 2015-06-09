@@ -1589,18 +1589,6 @@ out_timer:
 	}
 
 	/*
-	 * Switch to ATLAS, if we have a job whose deadline has not been
-	 * missed.
-	 */
-	raw_spin_lock_irqsave(&rq->lock, flags);
-	if (current->policy != SCHED_ATLAS &&
-	    !job_missed_deadline(next_job, ktime_get())) {
-		atlas_debug_(SYS_NEXT, "Switching to ATLAS");
-		atlas_set_scheduler(rq, current, SCHED_ATLAS);
-	}
-	raw_spin_unlock_irqrestore(&rq->lock, flags);
-
-	/*
 	 * The se-timer causes SIGXCPU to be delivered to userspace. If deadline
 	 * has alredy been missed, the timer callback is executed
 	 * instantaneously. SIGXCPU needs to be delivered irrespective of the
