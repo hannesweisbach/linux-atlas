@@ -1510,10 +1510,8 @@ SYSCALL_DEFINE0(atlas_next)
 		update_curr_atlas(rq);
 	}
 
-	if (!(se->flags & ATLAS_INIT)) {
-		BUG_ON(!atlas_rq->nr_jobs);
+	if (!(se->flags & ATLAS_INIT))
 		destroy_first_job(current);
-	}
 	se->flags &= ~ATLAS_INIT;
 
 	/*
