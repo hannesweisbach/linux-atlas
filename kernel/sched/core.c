@@ -2824,9 +2824,6 @@ static void __sched __schedule(void)
 		switch_count = &prev->nvcsw;
 	}
 
-#ifdef CONFIG_ATLAS
-	atlas_handle_slack(rq);
-#endif
 	if (task_on_rq_queued(prev))
 		update_rq_clock(rq);
 

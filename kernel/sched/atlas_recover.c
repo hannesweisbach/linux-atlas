@@ -122,22 +122,28 @@ static void update_curr_atlas_recover(struct rq *rq)
 static void enqueue_task_atlas_recover(struct rq *rq, struct task_struct *p,
 				       int flags)
 {
-	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
+	struct atlas_recover_rq *recover_rq = &rq->atlas_recover;
 	struct sched_atlas_entity *se = &p->atlas;
 
-	atlas_debug(ENQUEUE, JOB_FMT, JOB_ARG(se->job));
-
-    //mark task as on runqueue now
 	se->on_recover_rq = 1;
-    atlas_recover_rq->nr_runnable++;
-    
-    add_nr_running(rq, 1);
+
+	if ((flags & ENQUEUE_WAKEUP) && recover_rq->nr_runnable == 0) {
+		add_nr_running(rq, 1);
+		recover_rq->nr_runnable += 1;
+		atlas_debug(ENQUEUE,
+			    "Increment nr_running because of WAKEUP: %d/%d",
+			    rq->nr_running, recover_rq->nr_runnable);
+	}
+
+	atlas_debug(ENQUEUE, "Task %s/%d with " JOB_FMT "%s%s (%d/%d)", p->comm,
+		    task_pid_vnr(p), JOB_ARG(se->job),
+		    (flags & ENQUEUE_WAKEUP) ? " (Wakeup)" : "",
+		    (flags & ENQUEUE_WAKING) ? " (Waking)" : "", rq->nr_running,
+		    recover_rq->nr_runnable);
 }
 
-/*
- * dequeue task
- */
-static void dequeue_task_atlas_recover(struct rq *rq, struct task_struct *p, int flags)
+static void dequeue_task_atlas_recover(struct rq *rq, struct task_struct *p,
+				       int flags)
 {
 	struct atlas_recover_rq *atlas_recover_rq = &rq->atlas_recover;
 	struct sched_atlas_entity *se = &p->atlas;
@@ -146,14 +152,15 @@ static void dequeue_task_atlas_recover(struct rq *rq, struct task_struct *p, int
 
 	update_curr_atlas_recover(rq);
 
-    if (atlas_recover_rq->curr == se)
+	if (atlas_recover_rq->curr == se)
 		atlas_recover_rq->curr = NULL;
 
 	se->on_recover_rq = 0;
 
-    sub_nr_running(rq, 1);
-	atlas_recover_rq->nr_runnable--;
-
+	atlas_debug(DEQUEUE, "Task %s/%d with " JOB_FMT " %s (%d/%d)", p->comm,
+		    task_pid_vnr(p), JOB_ARG(se->job),
+		    (flags & DEQUEUE_SLEEP) ? " (sleep)" : "", rq->nr_running,
+		    atlas_recover_rq->nr_runnable);
 }
 
 static void yield_task_atlas_recover(struct rq *rq) 
@@ -266,8 +273,10 @@ static struct task_struct *
 pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 {
 	unsigned long flags;
+	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct atlas_recover_rq *recover_rq = &rq->atlas_recover;
 	struct atlas_job *job = pick_first_job(recover_rq->rb_leftmost_job);
+	struct sched_atlas_entity *se = NULL;
 
 	update_curr_atlas_recover(rq);
 
@@ -275,17 +284,25 @@ pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 		BUG_ON(job->root != &recover_rq->jobs);
 		remove_job_from_tree(job, &recover_rq->rb_leftmost_job);
 
-		BUG_ON(job->tsk->policy != SCHED_ATLAS_RECOVER);
-		atlas_set_scheduler(task_rq(job->tsk), job->tsk, SCHED_NORMAL);
+		if (recover_rq->rb_leftmost_job == NULL) {
+			sub_nr_running(rq, 1);
+			recover_rq->nr_runnable -= 1;
+			atlas_debug(PICK_NEXT_TASK,
+				    "Decrement Recover runnable %d/%d",
+				    rq->nr_running, recover_rq->nr_runnable);
+		}
+		/* Task might have an ATLAS job or be stuck in ATLAS slack */
+		if (job->tsk->policy == SCHED_ATLAS_RECOVER)
+			atlas_set_scheduler(task_rq(job->tsk), job->tsk,
+					    SCHED_NORMAL);
 	}
 
-	BUG_ON(job && !recover_rq->nr_runnable);
-	BUG_ON(recover_rq->nr_runnable && !job);
-
-	if (likely(!recover_rq->nr_runnable))
+	if (likely(recover_rq->nr_runnable == 0))
 		return NULL;
 
-	BUG_ON(!recover_rq->rb_leftmost_job);
+	BUG_ON(recover_rq->rb_leftmost_job == NULL);
+
+	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 
 	job = pick_first_job(recover_rq->rb_leftmost_job);
 
@@ -297,14 +314,37 @@ pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 		}
 	}
 
-	if (!job)
-		return NULL;
+	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 
-	put_prev_task(rq, prev);
+	if (!job) {
+		sub_nr_running(rq, 1);
+		recover_rq->nr_runnable -= 1;
+		return NULL;
+	}
+
+	se = &job->tsk->atlas;
+
+	if (job->tsk != prev) {
+		atlas_debug(PICK_NEXT_TASK, "put_prev_task %s/%d", prev->comm,
+			    task_pid_vnr(prev));
+		put_prev_task(rq, prev);
+	}
+
+	if (job->tsk != prev || prev->policy != SCHED_ATLAS_RECOVER) {
+		update_stats_curr_start(rq, &job->tsk->atlas);
+		if (job->tsk->policy != SCHED_ATLAS_RECOVER)
+			atlas_set_scheduler(rq, job->tsk, SCHED_ATLAS_RECOVER);
+	} else if (se->job != job) {
+		/* Account properly, if the same task runs, but with a
+		 * different job
+		 */
+		update_curr_atlas_recover(rq);
+		update_stats_curr_start(rq, se);
+	}
 
 	atlas_debug(PICK_NEXT_TASK, JOB_FMT " to run.", JOB_ARG(job));
 
-	recover_rq->curr = &job->tsk->atlas;
+	recover_rq->curr = se;
 	recover_rq->curr->job = job;
 	update_stats_curr_start(rq, recover_rq->curr);
 
