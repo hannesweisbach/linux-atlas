@@ -29,7 +29,6 @@ struct atlas_rq {
 	unsigned nr_jobs;
 	raw_spinlock_t lock;
 	int nr_runnable;
-	int in_slack;
 	struct hrtimer timer; //used for slack time and for time to cfs
 	enum atlas_timer_target timer_target;
 	unsigned long flags;
