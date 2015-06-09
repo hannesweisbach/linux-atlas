@@ -187,10 +187,15 @@ extern struct task_group root_task_group;
 #ifdef CONFIG_ATLAS
 #define INIT_ATLAS(tsk)                                                        \
 	.atlas = {                                                             \
+		.list = LIST_HEAD_INIT(tsk.atlas.list),                        \
 		.state = ATLAS_UNDEF,                                          \
 		.flags = ATLAS_INIT,                                           \
-		.jobs = LIST_HEAD_INIT(tsk.atlas.jobs),                        \
+		.on_rq = 0,                                                    \
+		.on_recover_rq = 0,                                            \
 		.job = NULL,                                                   \
+		.jobs = LIST_HEAD_INIT(tsk.atlas.jobs),                        \
+		.nr_atlas_jobs = 0,                                            \
+		.new_jobs = 0,                                                 \
 		.jobs_lock = __SPIN_LOCK_UNLOCKED(tsk.atlas.jobs_lock),        \
 	},
 #else
