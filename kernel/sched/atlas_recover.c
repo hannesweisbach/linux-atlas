@@ -62,6 +62,17 @@ static inline void setup_rq_timer(struct atlas_recover_rq *atlas_recover_rq,
 void init_atlas_recover_rq(struct atlas_recover_rq *atlas_recover_rq)
 {
 	atlas_recover_rq->curr = NULL;
+
+	{
+		const size_t size = sizeof(atlas_recover_rq->recover_jobs.name);
+		atlas_recover_rq->recover_jobs.jobs = RB_ROOT;
+		atlas_recover_rq->recover_jobs.leftmost_job = NULL;
+		raw_spin_lock_init(&atlas_recover_rq->recover_jobs.lock);
+		atlas_recover_rq->recover_jobs.rq = rq_of(atlas_recover_rq);
+		atlas_recover_rq->recover_jobs.nr_running = 0;
+		snprintf(atlas_recover_rq->recover_jobs.name, size, "Recover");
+	}
+
 	atlas_recover_rq->rb_leftmost_job = NULL;
 	atlas_recover_rq->jobs = RB_ROOT;
 	atlas_recover_rq->nr_runnable = 0;
@@ -127,19 +138,20 @@ static void enqueue_task_atlas_recover(struct rq *rq, struct task_struct *p,
 
 	se->on_recover_rq = 1;
 
-	if ((flags & ENQUEUE_WAKEUP) && recover_rq->nr_runnable == 0) {
-		add_nr_running(rq, 1);
-		recover_rq->nr_runnable += 1;
+	if ((flags & ENQUEUE_WAKEUP) &&
+	    not_runnable(&recover_rq->recover_jobs)) {
+		inc_nr_running(&recover_rq->recover_jobs);
 		atlas_debug(ENQUEUE,
 			    "Increment nr_running because of WAKEUP: %d/%d",
-			    rq->nr_running, recover_rq->nr_runnable);
+			    rq->nr_running,
+			    recover_rq->recover_jobs.nr_running);
 	}
 
 	atlas_debug(ENQUEUE, "Task %s/%d with " JOB_FMT "%s%s (%d/%d)", p->comm,
 		    task_pid_vnr(p), JOB_ARG(se->job),
 		    (flags & ENQUEUE_WAKEUP) ? " (Wakeup)" : "",
 		    (flags & ENQUEUE_WAKING) ? " (Waking)" : "", rq->nr_running,
-		    recover_rq->nr_runnable);
+		    recover_rq->recover_jobs.nr_running);
 }
 
 static void dequeue_task_atlas_recover(struct rq *rq, struct task_struct *p,
@@ -160,7 +172,7 @@ static void dequeue_task_atlas_recover(struct rq *rq, struct task_struct *p,
 	atlas_debug(DEQUEUE, "Task %s/%d with " JOB_FMT " %s (%d/%d)", p->comm,
 		    task_pid_vnr(p), JOB_ARG(se->job),
 		    (flags & DEQUEUE_SLEEP) ? " (sleep)" : "", rq->nr_running,
-		    atlas_recover_rq->nr_runnable);
+		    atlas_recover_rq->recover_jobs.nr_running);
 }
 
 static void yield_task_atlas_recover(struct rq *rq) 
@@ -275,36 +287,28 @@ pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 	unsigned long flags;
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct atlas_recover_rq *recover_rq = &rq->atlas_recover;
-	struct atlas_job *job = pick_first_job(recover_rq->rb_leftmost_job);
+	struct atlas_job *job = pick_first_job(&recover_rq->recover_jobs);
 	struct sched_atlas_entity *se = NULL;
 
 	update_curr_atlas_recover(rq);
 
 	for (; job && !has_execution_time_left(job); job = pick_next_job(job)) {
-		BUG_ON(job->root != &recover_rq->jobs);
-		remove_job_from_tree(job, &recover_rq->rb_leftmost_job);
+		BUG_ON(job->tree != &recover_rq->recover_jobs);
+		remove_job_from_tree(job);
 
-		if (recover_rq->rb_leftmost_job == NULL) {
-			sub_nr_running(rq, 1);
-			recover_rq->nr_runnable -= 1;
-			atlas_debug(PICK_NEXT_TASK,
-				    "Decrement Recover runnable %d/%d",
-				    rq->nr_running, recover_rq->nr_runnable);
-		}
 		/* Task might have an ATLAS job or be stuck in ATLAS slack */
 		if (job->tsk->policy == SCHED_ATLAS_RECOVER)
 			atlas_set_scheduler(task_rq(job->tsk), job->tsk,
 					    SCHED_NORMAL);
 	}
 
-	if (likely(recover_rq->nr_runnable == 0))
+	if (likely(not_runnable(&recover_rq->recover_jobs)))
 		return NULL;
 
-	BUG_ON(recover_rq->rb_leftmost_job == NULL);
+	BUG_ON(recover_rq->recover_jobs.leftmost_job == NULL);
 
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-
-	job = pick_first_job(recover_rq->rb_leftmost_job);
+	job = pick_first_job(&recover_rq->recover_jobs);
 
 	for (; job && !task_on_rq_queued(job->tsk); job = pick_next_job(job)) {
 		struct task_struct *tsk = job->tsk;
@@ -317,8 +321,7 @@ pick_next_task_atlas_recover(struct rq *rq, struct task_struct *prev)
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 
 	if (!job) {
-		sub_nr_running(rq, 1);
-		recover_rq->nr_runnable -= 1;
+		dec_nr_running(&recover_rq->recover_jobs);
 		return NULL;
 	}
 
