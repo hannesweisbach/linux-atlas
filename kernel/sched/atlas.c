@@ -1351,9 +1351,9 @@ static void destroy_first_job(struct task_struct *tsk)
 	BUG_ON(!job);
 
 	atlas_debug_(SYS_NEXT, "Finished " JOB_FMT " at "
-			       "%lld under %s",
+			       "%lld under %s (%s)",
 		     JOB_ARG(job), ktime_to_ms(ktime_get()),
-		     sched_name(current->policy));
+		     sched_name(current->policy), job_rq_name(job));
 
 	{
 		unsigned long flags;

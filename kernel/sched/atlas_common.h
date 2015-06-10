@@ -99,13 +99,24 @@ atlas_task_of(const struct sched_atlas_entity const *se)
 	return container_of(se, struct task_struct, atlas);
 }
 
+static inline const char *job_rq_name(struct atlas_job *job)
+{
+	if (job == NULL)
+		return "";
+
+	if (job->tree == NULL)
+		return "CFS";
+	else
+		return job->tree->name;
+}
+
 extern void sched_log(const char *fmt, ...);
 void update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
 			   ktime_t delta_exec);
 void atlas_set_scheduler(struct rq *, struct task_struct *, int policy);
 void remove_job_from_tree(struct atlas_job *const job);
 
-#define JOB_FMT "Job %s/%d/%lld (e: %lld/%lld, d: %lld/%lld)"
+#define JOB_FMT "Job %s/%d/%lld (e: %lld/%lld, d: %lld/%lld, %s)"
 #define JOB_ARG(job)                                                           \
 	(job) ? (job)->tsk->comm : "(none)",                                   \
 			(job) ? task_pid_vnr(job->tsk) : 0,                    \
@@ -113,7 +124,8 @@ void remove_job_from_tree(struct atlas_job *const job);
 			(job) ? ktime_to_ms((job)->sexectime) : -1,            \
 			(job) ? ktime_to_ms((job)->exectime) : -1,             \
 			(job) ? ktime_to_ms((job)->sdeadline) : -1,            \
-			(job) ? ktime_to_ms((job)->deadline) : -1
+			(job) ? ktime_to_ms((job)->deadline) : -1,             \
+			job_rq_name(job)
 
 #define atlas_debug_(flag, fmt, ...)                                           \
 	do {                                                                   \
