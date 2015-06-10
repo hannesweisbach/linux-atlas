@@ -1213,38 +1213,40 @@ void exit_atlas(struct task_struct *p)
 	task_rq_unlock(rq, p, &flags);
 }
 
-/*
- * All the scheduling class methods:
- */
 const struct sched_class atlas_sched_class = {
 	.next               = &atlas_recover_sched_class,
 	.enqueue_task       = enqueue_task_atlas,
 	.dequeue_task       = dequeue_task_atlas,
 	.yield_task         = yield_task_atlas,
-	//.yield_to_task		= yield_to_task_atlas,
+	//.yield_to_task      = yield_to_task_atlas,
 
 	.check_preempt_curr = check_preempt_curr_atlas,
 
 	.pick_next_task     = pick_next_task_atlas,
 	.put_prev_task      = put_prev_task_atlas,
 
-/**we do not support SMP so far*/
 #ifdef CONFIG_SMP
 	.select_task_rq     = select_task_rq_atlas,
+	//.migrate_task_rq    = migrate_task_rq_atlas,
 
-	//.rq_online		= rq_online_atlas,
-	//.rq_offline		= rq_offline_atlas,
+	//.post_schedule      = post_schedule_atlas,
+	//.task_waking        = task_waking_atlas,
+	//.task_woken         = task_work_atlas,
 
-	//.task_waking		= task_waking_atlas,
+	//.set_cpus_allowed   = set_cpus_allowed_atlas,
+
+	//.rq_online          = rq_online_atlas,
+	//.rq_offline         = rq_offline_atlas,
 #endif
 
 	.set_curr_task      = set_curr_task_atlas,
 	.task_tick          = task_tick_atlas,
-	//.task_fork        = task_fork_atlas,
+	//.task_fork          = task_fork_atlas,
+	//.task_dead          = task_dead_atlas,
 
-	.prio_changed       = prio_changed_atlas,
 	.switched_from      = switched_from_atlas,
 	.switched_to        = switched_to_atlas,
+	.prio_changed       = prio_changed_atlas,
 
 	.get_rr_interval    = get_rr_interval_atlas,
 	.update_curr        = update_curr_atlas,
