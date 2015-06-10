@@ -30,12 +30,12 @@ enum debug {
 u32 is_flag_enabled(enum debug);
 
 static inline struct atlas_job *
-pick_first_job(const struct rb_node *const rb_leftmost_job)
+pick_first_job(const struct atlas_job_tree *tree)
 {
-	if (!rb_leftmost_job)
+	if (tree->leftmost_job == NULL)
 		return NULL;
 
-	return rb_entry(rb_leftmost_job, struct atlas_job, rb_node);
+	return rb_entry(tree->leftmost_job, struct atlas_job, rb_node);
 }
 
 static inline struct atlas_job *pick_next_job(const struct atlas_job const *job)
@@ -71,8 +71,7 @@ extern void sched_log(const char *fmt, ...);
 void update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
 			   ktime_t delta_exec);
 void atlas_set_scheduler(struct rq *, struct task_struct *, int policy);
-void remove_job_from_tree(struct atlas_job *const job,
-			  struct rb_node **const rb_leftmost_job);
+void remove_job_from_tree(struct atlas_job *const job);
 
 #define JOB_FMT "Job %s/%d/%lld (e: %lld/%lld, d: %lld/%lld)"
 #define JOB_ARG(job)                                                           \
