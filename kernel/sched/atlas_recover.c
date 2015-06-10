@@ -382,38 +382,40 @@ static void set_curr_task_atlas_recover(struct rq *rq)
     return;
 }
 
-/*
- * All the scheduling class methods:
- */
 const struct sched_class atlas_recover_sched_class = {
 	.next               = &fair_sched_class,
 	.enqueue_task       = enqueue_task_atlas_recover,
 	.dequeue_task       = dequeue_task_atlas_recover,
 	.yield_task         = yield_task_atlas_recover,
-	//.yield_to_task		= yield_to_task_atlas,
+	//.yield_to_task      = yield_to_task_atlas,
 
 	.check_preempt_curr = check_preempt_curr_atlas_recover,
 
 	.pick_next_task     = pick_next_task_atlas_recover,
 	.put_prev_task      = put_prev_task_atlas_recover,
 
-/**we do not support SMP so far*/
 #ifdef CONFIG_SMP
-	.select_task_rq     = select_task_rq_atlas_recover,
+	.select_task_rq     = select_task_rq_recover,
+	.migrate_task_rq    = migrate_task_rq_recover,
 
-	//.rq_online		= rq_online_atlas,
-	//.rq_offline		= rq_offline_atlas,
+	//.post_schedule      = post_schedule_recover,
+	//.task_waking        = task_waking_recover,
+	//.task_woken         = task_work_recover, // migration point
 
-	//.task_waking		= task_waking_atlas,
+	//.set_cpus_allowed   = set_cpus_allowed_recover,
+
+	//.rq_online          = rq_online_atlas,
+	//.rq_offline         = rq_offline_atlas,
 #endif
 
 	.set_curr_task      = set_curr_task_atlas_recover,
-	.task_tick          = task_tick_atlas_recover,
-	//.task_fork        = task_fork_atlas,
+	.task_tick          = task_tick_atlas_recover, //accounting + resched if !leftmost anymore
+	//.task_fork          = task_fork_atlas,
+	//.task_dead          = task_dead_recover,
 
-	.prio_changed       = prio_changed_atlas_recover,
 	.switched_from      = switched_from_atlas_recover,
-	.switched_to        = switched_to_atlas_recover,
+	.switched_to        = switched_to_atlas_recover, //check preemption, push work away
+	.prio_changed       = prio_changed_atlas_recover,
 
 	.get_rr_interval    = get_rr_interval_atlas_recover,
 	.update_curr        = update_curr_atlas_recover,
