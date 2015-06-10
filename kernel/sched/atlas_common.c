@@ -11,44 +11,43 @@
 #include "sched.h"
 #include "atlas_common.h"
 
-#define do_for_job(job_id, atlas_rq, job)                                                \
-	if (0) {                                                                         \
-	unlock__:                                                                        \
-		;                                                                        \
-		unlock_runqueues_irqrestore();                                           \
-	} else                                                                           \
-		while (1)                                                                \
-			if (1) {                                                         \
-				int cpu;                                                 \
-				lock_runqueues_irqsave();                                \
-				for_each_possible_cpu(cpu) /*online?*/                   \
-				{                                                        \
-					struct rq *rq = cpu_rq(cpu);                     \
-					atlas_rq = &rq->atlas;                           \
-					for (job = pick_first_job(                       \
-							     atlas_rq->rb_leftmost_job); \
-					     job; job = pick_next_job(job)) {            \
-						if (job->id == job_id) {                 \
-							goto loop_begin;                 \
-						}                                        \
-					}                                                \
-				}                                                        \
-				job = NULL;                                              \
-				printk_deferred(KERN_INFO "%s(%d): ATLAS job "           \
-							  "%llx not found.\n",           \
-						__func__, __LINE__, job_id);             \
-				goto unlock__;                                           \
-			} else                                                           \
-				while (1)                                                \
-					if (1) {/*terminated by break */                 \
-						goto unlock__;                           \
-					} else                                           \
-						while (1)                                \
-							if (1) {/*terminated             \
-								   */                    \
-								/* normally */           \
-								goto unlock__;           \
-							} else                           \
+#define do_for_job(job_id, atlas_rq, job)                                            \
+	if (0) {                                                                     \
+	unlock__:;                                                                   \
+		unlock_runqueues_irqrestore();                                       \
+	} else                                                                       \
+		while (1)                                                            \
+			if (1) {                                                     \
+				int cpu;                                             \
+				lock_runqueues_irqsave();                            \
+				for_each_possible_cpu(cpu) /*online?*/               \
+				{                                                    \
+					struct rq *rq = cpu_rq(cpu);                 \
+					atlas_rq = &rq->atlas;                       \
+					for (job = pick_first_job(                   \
+							     &atlas_rq->atlas_jobs); \
+					     job; job = pick_next_job(job)) {        \
+						if (job->id == job_id) {             \
+							goto loop_begin;             \
+						}                                    \
+					}                                            \
+				}                                                    \
+				job = NULL;                                          \
+				printk_deferred(KERN_INFO "%s(%d): ATLAS job "       \
+							  "%llx not found.\n",       \
+						__func__, __LINE__, job_id);         \
+				goto unlock__;                                       \
+			} else                                                       \
+				while (1)                                            \
+					if (1) {/*terminated by break */             \
+						goto unlock__;                       \
+					} else                                       \
+						while (1)                            \
+							if (1) {/*terminated         \
+								   */                \
+								/* normally */       \
+								goto unlock__;       \
+							} else                       \
 							loop_begin:
 
 static u32 atlas_debug_flags[NUM_FLAGS];
@@ -125,32 +124,20 @@ size_t print_atlas_job(const struct atlas_job const *job, char *buf,
 	}
 }
 
-size_t print_timeline(const struct rb_root *jobs, char *buf, const size_t size,
-		      const char *const name)
+size_t print_timeline(const struct atlas_job_tree *tree, char *buf,
+		      const size_t size)
 {
 	size_t offset = 0;
 	const struct atlas_job *job;
-	struct rq * rq;
+	struct rq *rq = task_rq(current);
 
-	{
-		struct rb_node *first = rb_first(jobs);
-		if (first)
-			job = rb_entry(first, struct atlas_job, rb_node);
-		else
-			job = NULL;
-	}
-
-	if (!job)
-		return offset;
-
-	rq = task_rq(job->tsk);
 	offset += scnprintf(&buf[offset], size - offset,
 			    "%s (%d/%d/%d) (%d/%d):\n", name, rq->nr_running,
 			    rq->atlas.nr_runnable,
 			    rq->atlas_recover.nr_runnable,
 			    job->tsk->atlas.nr_atlas_jobs, rq->atlas.nr_jobs);
 
-	for (; job; job = pick_next_job(job)) {
+	for (job = pick_first_job(tree); job; job = pick_next_job(job)) {
 		offset += print_atlas_job(job, &buf[offset], size - offset);
 	}
 
@@ -164,10 +151,8 @@ size_t print_rq(const struct rq *const rq, char *buf, size_t size)
 	const struct atlas_rq *const atlas = &rq->atlas;
 	const struct atlas_recover_rq *const recover = &rq->atlas_recover;
 
-	offset += print_timeline(&atlas->jobs, &buf[offset], size - offset,
-				 "ATLAS");
-	offset += print_timeline(&recover->jobs, &buf[offset], size - offset,
-				 "Recover");
+	offset += print_timeline(&atlas->atlas_jobs, &buf[offset], size - offset);
+	offset += print_timeline(&recover->recover_jobs, &buf[offset], size - offset);
 
 	return offset;
 }
@@ -271,7 +256,7 @@ static ssize_t write_file_debug_delete(struct file *file,
 
 	do_for_job(job_id, atlas_rq, job)
 	{
-		erase_rq_job(atlas_rq, job);
+		remove_job_from_tree(job);
 	}
 
 	/* job is NULL if not found */

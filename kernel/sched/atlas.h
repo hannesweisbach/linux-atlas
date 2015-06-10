@@ -3,11 +3,14 @@
 
 #include <linux/spinlock.h>
 
+struct atlas_job_tree;
+
 //needs to be defined here because of trace stuff
 struct atlas_job {
 	struct list_head list;
 	struct rb_node rb_node;
 	struct rb_root *root;
+	struct atlas_job_tree *tree;
 	struct task_struct *tsk;
 	ktime_t exectime; //relative
 	ktime_t deadline; //absolut
@@ -22,7 +25,17 @@ enum atlas_timer_target {
 	ATLAS_NONE
 };
 
+struct atlas_job_tree {
+	struct rb_root jobs;
+	struct rb_node *leftmost_job;
+	raw_spinlock_t lock;
+	struct rq *rq;
+	int nr_running;
+	char name[8];
+};
+
 struct atlas_rq {
+	struct atlas_job_tree atlas_jobs;
 	struct sched_atlas_entity *curr;
 	struct rb_root jobs;
 	struct rb_node *rb_leftmost_job;
@@ -38,6 +51,7 @@ struct atlas_rq {
 
 struct atlas_recover_rq {
 	struct sched_atlas_entity *curr;
+	struct atlas_job_tree recover_jobs;
 	struct rb_root jobs;
 	struct rb_node *rb_leftmost_job;
 	int nr_runnable;
