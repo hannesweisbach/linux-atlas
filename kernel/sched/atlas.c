@@ -170,7 +170,7 @@ static inline void job_dealloc(struct atlas_job *job)
 	WARN(job->list.prev && job->list.prev != &job->list &&
 			     job->list.prev != LIST_POISON2,
 	     JOB_FMT " has prev pointer", JOB_ARG(job));
-
+	memset(job, 0, sizeof(*job));
 	kfree(job);
 }
 
