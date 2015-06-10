@@ -55,9 +55,9 @@ void sched_log(const char *fmt, ...)
 	preempt_enable();
 }
 
-static struct atlas_job *pick_last_job(struct atlas_rq *atlas_rq)
+static struct atlas_job *pick_last_job(struct atlas_job_tree *tree)
 {
-	struct rb_node *last = rb_last(&atlas_rq->jobs);
+	struct rb_node *last = rb_last(&tree->jobs);
 
 	if (!last)
 		return NULL;
@@ -152,11 +152,9 @@ static inline void job_dealloc(struct atlas_job *job)
 			struct rq *rq = task_rq(job->tsk);
 			struct atlas_rq *atlas_rq = &rq->atlas;
 
-			struct rb_node *node;
 			struct atlas_job *pos = NULL;
-			for (node = rb_first(&atlas_rq->jobs); node;
-			     node = rb_next(&pos->rb_node)) {
-				pos = rb_entry(node, struct atlas_job, rb_node);
+			for (pos = pick_first_job(&atlas_rq->atlas_jobs); pos;
+			     pos = pick_next_job(pos)) {
 				WARN(job == pos, JOB_FMT " is still in rb tree",
 				     JOB_ARG(job));
 			}
@@ -508,7 +506,7 @@ static void advance_thread_in_cfs(struct atlas_rq *atlas_rq) {
 
 	BUG_ON(atlas_rq->slack_task != NULL);
 
-	if (!atlas_rq->nr_runnable) {
+	if (not_runnable(&atlas_rq->atlas_jobs)) {
 		sched_log("advance: no thread ready");
 		stop_slack_timer(atlas_rq);
 		return;
@@ -623,10 +621,6 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	raw_spin_lock_init(&atlas_rq->lock);
 
 	atlas_rq->curr = NULL;
-	atlas_rq->jobs = RB_ROOT;
-	atlas_rq->rb_leftmost_job = NULL;
-	atlas_rq->nr_jobs = 0;
-	atlas_rq->nr_runnable = 0;
 
 	hrtimer_init(&atlas_rq->timer, CLOCK_MONOTONIC,
 		     HRTIMER_MODE_ABS_PINNED);
@@ -1031,7 +1025,7 @@ out_notask:
 	atlas_rq->curr = NULL;
 	atlas_debug(PICK_NEXT_TASK, "No ATLAS job ready. (%d/%d)%s",
 		    rq->nr_running, atlas_rq->atlas_jobs.nr_running,
-		    (atlas_rq->rb_leftmost_job == NULL) ? " (-1)" : "");
+		    has_no_jobs(&atlas_rq->atlas_jobs) ? " (-1)" : "");
 	return NULL;
 }
 
@@ -1346,21 +1340,6 @@ static void schedule_job(struct atlas_job *const job)
 		raw_spin_unlock(&atlas_rq->lock);
 		task_rq_unlock(rq, job->tsk, &flags);
 	}
-}
-
-const char *job_rq_name(struct atlas_job *job)
-{
-	struct atlas_rq *atlas_rq = &task_rq(job->tsk)->atlas;
-	struct atlas_recover_rq *recover_rq = &task_rq(job->tsk)->atlas_recover;
-
-	if (!job->root)
-		return "CFS";
-	else if (job->root == &atlas_rq->jobs)
-		return "ATLAS";
-	else if (job->root == &recover_rq->jobs)
-		return "Recover";
-	else
-		BUG();
 }
 
 static void destroy_first_job(struct task_struct *tsk)

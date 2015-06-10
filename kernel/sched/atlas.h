@@ -37,11 +37,7 @@ struct atlas_job_tree {
 struct atlas_rq {
 	struct atlas_job_tree atlas_jobs;
 	struct sched_atlas_entity *curr;
-	struct rb_root jobs;
-	struct rb_node *rb_leftmost_job;
-	unsigned nr_jobs;
 	raw_spinlock_t lock;
-	int nr_runnable;
 	struct hrtimer timer; //used for slack time and for time to cfs
 	enum atlas_timer_target timer_target;
 	unsigned long flags;
