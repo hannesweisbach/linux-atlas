@@ -1470,6 +1470,7 @@ SYSCALL_DEFINE0(atlas_next)
 	sched_log("NEXT pid=%d", current->pid);
 	
 	stop_timer(atlas_rq);
+	hrtimer_cancel(&rq->atlas_recover.timer);
 	
 	if (current->sched_class == &atlas_sched_class) {
 		update_rq_clock(rq);
