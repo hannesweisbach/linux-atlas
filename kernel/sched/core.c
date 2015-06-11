@@ -2207,8 +2207,7 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->rt.on_list		= 0;
 
 #ifdef CONFIG_ATLAS
-	if (unlikely(p->policy == SCHED_ATLAS ||
-		     p->policy == SCHED_ATLAS_RECOVER)) {
+	if (unlikely(p->policy == SCHED_ATLAS)) {
 		WARN_ONCE(1, "Forking ATLAS tasks requires "
 			     "SCHED_FLAG_RESET_ON_FORK to be set. Setting "
 			     "now.");
@@ -2230,7 +2229,6 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->atlas.state = ATLAS_UNDEF;
 	p->atlas.flags = ATLAS_INIT;
 	p->atlas.on_rq = 0;
-	p->atlas.on_recover_rq = 0;
 	p->atlas.job = NULL;
 	INIT_LIST_HEAD(&p->atlas.jobs);
 	p->atlas.nr_atlas_jobs = 0;
@@ -3680,8 +3678,7 @@ void rt_mutex_setprio(struct task_struct *p, int prio)
 	 */
 #ifdef CONFIG_ATLAS
 	WARN_ONCE(p->sched_class == &atlas_sched_class ||
-		  p->sched_class == &atlas_recover_sched_class ||
-		  p->policy == SCHED_ATLAS || p->policy == SCHED_ATLAS_RECOVER,
+				  p->policy == SCHED_ATLAS,
 		  "RT mutexes are not implemented for ATLAS.");
 #endif
 	if (dl_prio(prio)) {
@@ -3970,8 +3967,6 @@ static void __setscheduler(struct rq *rq, struct task_struct *p,
 	 * so we have to check for it first. */
 	if (p->policy == SCHED_ATLAS)
 		p->sched_class = &atlas_sched_class;
-	else if (p->policy == SCHED_ATLAS_RECOVER)
-		p->sched_class = &atlas_recover_sched_class;
 #endif
 	else if (dl_prio(p->prio))
 		p->sched_class = &dl_sched_class;
@@ -4091,8 +4086,7 @@ recheck:
 #ifndef CONFIG_ATLAS
 		if (!valid_policy(policy))
 #else
-		if (!valid_policy(policy) &&
-                    policy != SCHED_ATLAS && policy != SCHED_ATLAS_RECOVER)
+		if (!valid_policy(policy) && policy != SCHED_ATLAS)
 #endif
 			return -EINVAL;
 	}
@@ -7495,7 +7489,6 @@ void __init sched_init(void)
 		init_dl_rq(&rq->dl);
 #ifdef CONFIG_ATLAS
 		init_atlas_rq(&rq->atlas);
-		init_atlas_recover_rq(&rq->atlas_recover);
 #endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
