@@ -595,7 +595,6 @@ struct rq {
 	struct cfs_rq cfs;
 #ifdef CONFIG_ATLAS
 	struct atlas_rq atlas;
-	struct atlas_recover_rq atlas_recover;
 #endif
 	struct rt_rq rt;
 	struct dl_rq dl;
@@ -1256,7 +1255,6 @@ extern const struct sched_class dl_sched_class;
 extern const struct sched_class rt_sched_class;
 #ifdef CONFIG_ATLAS
 extern const struct sched_class atlas_sched_class;
-extern const struct sched_class atlas_recover_sched_class;
 #endif
 extern const struct sched_class fair_sched_class;
 extern const struct sched_class idle_sched_class;
@@ -1728,7 +1726,6 @@ extern void init_dl_rq(struct dl_rq *dl_rq);
 #ifdef CONFIG_ATLAS
 extern void init_atlas_rq(struct atlas_rq *atlas_rq);
 extern void atlas_cfs_blocked(struct rq *rq, struct task_struct *p);
-extern void init_atlas_recover_rq(struct atlas_recover_rq *atlas_recover_rq);
 #endif
 
 extern void cfs_bandwidth_usage_inc(void);

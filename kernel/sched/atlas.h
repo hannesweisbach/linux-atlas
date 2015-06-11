@@ -36,6 +36,7 @@ struct atlas_job_tree {
 
 struct atlas_rq {
 	struct atlas_job_tree atlas_jobs;
+	struct atlas_job_tree recover_jobs;
 	struct sched_atlas_entity *curr;
 	raw_spinlock_t lock;
 	struct hrtimer timer; //used for slack time and for time to cfs
@@ -43,15 +44,6 @@ struct atlas_rq {
 	unsigned long flags;
 	struct task_struct *slack_task;
 	int skip_update_curr;
-};
-
-struct atlas_recover_rq {
-	struct sched_atlas_entity *curr;
-	struct atlas_job_tree recover_jobs;
-	struct rb_root jobs;
-	struct rb_node *rb_leftmost_job;
-	int nr_runnable;
-	struct hrtimer timer;
 };
 
 #endif /* _SCHED_ATLAS_INTERNAL_H */

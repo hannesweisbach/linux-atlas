@@ -14,7 +14,7 @@ endif
 obj-y += core.o loadavg.o clock.o cputime.o
 obj-y += idle_task.o fair.o rt.o deadline.o stop_task.o
 obj-y += wait.o completion.o idle.o
-obj-$(CONFIG_ATLAS) += atlas_common.o atlas.o atlas_recover.o
+obj-$(CONFIG_ATLAS) += atlas_common.o atlas.o
 ifneq ($(CONFIG_ATLAS),y)
 obj-y += no_atlas.o
 endif

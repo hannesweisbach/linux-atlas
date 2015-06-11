@@ -191,7 +191,6 @@ extern struct task_group root_task_group;
 		.state = ATLAS_UNDEF,                                          \
 		.flags = ATLAS_INIT,                                           \
 		.on_rq = 0,                                                    \
-		.on_recover_rq = 0,                                            \
 		.job = NULL,                                                   \
 		.jobs = LIST_HEAD_INIT(tsk.atlas.jobs),                        \
 		.nr_atlas_jobs = 0,                                            \
