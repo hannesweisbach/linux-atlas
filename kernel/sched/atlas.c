@@ -1520,7 +1520,6 @@ static void destroy_first_job(struct task_struct *tsk)
 
 SYSCALL_DEFINE0(atlas_next)
 {
-	int ret = 0;
 	struct atlas_job *next_job = NULL;
 	struct sched_atlas_entity *se = &current->atlas;
 	struct rq *rq;
@@ -1549,7 +1548,6 @@ SYSCALL_DEFINE0(atlas_next)
 
 	if (!(se->flags & ATLAS_INIT))
 		destroy_first_job(current);
-	se->flags &= ~ATLAS_INIT;
 
 	/*
 	 * This is not correct. use first_entry_or_null to choose whether to
@@ -1599,8 +1597,7 @@ SYSCALL_DEFINE0(atlas_next)
 			    task_pid_vnr(current));
 		se->state = ATLAS_UNDEF;
 		__set_current_state(TASK_RUNNING);
-		ret = -EINTR;
-		goto out;
+		return -EINTR;
 	}
 
 	__set_current_state(TASK_RUNNING);
@@ -1609,6 +1606,7 @@ SYSCALL_DEFINE0(atlas_next)
 	preempt_disable();
 
 out_timer:
+	se->flags &= ~ATLAS_INIT;
 	set_tsk_need_resched(current);
 
 	atlas_debug_(SYS_NEXT,
@@ -1640,8 +1638,7 @@ out_timer:
 
 	preempt_enable();
 
-out:	
-	return ret;
+	return 0;
 }
 
 SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
