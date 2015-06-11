@@ -909,21 +909,27 @@ static void handle_recover_misses(struct atlas_rq *atlas_rq)
 	}
 }
 
-static struct atlas_job *select_recover_job(struct atlas_rq *atlas_rq)
+static struct atlas_job *select_job(struct atlas_job_tree *tree)
 {
 	struct atlas_job *job = NULL;
-	if (not_runnable(&atlas_rq->recover_jobs))
+
+	if (not_runnable(tree))
 		return job;
 
-	BUG_ON(has_no_jobs(&atlas_rq->recover_jobs));
+	BUG_ON(has_no_jobs(tree));
 
-	for (job = pick_first_job(&atlas_rq->recover_jobs);
-	     job && !task_on_rq_queued(job->tsk); job = pick_next_job(job)) {
+	for (job = pick_first_job(tree); job && !task_on_rq_queued(job->tsk);
+	     job = pick_next_job(job)) {
 		struct task_struct *tsk = job->tsk;
 		if (!task_on_rq_queued(tsk)) {
 			atlas_debug(PICK_NEXT_TASK, "Task %s/%d blocked",
 				    tsk->comm, task_pid_vnr(tsk));
-			/* So that we can see the wakeup */
+			/* Pull the task to ATLAS, to see the wakup event.
+			 * TODO: do this conditionally, when no other tasks are
+			 * runnable. The only reason ATLAS needs to see the
+			 * wakup is incrementing nr_running if it was
+			 * previously 0
+			 */
 			if (tsk->policy != SCHED_ATLAS)
 				atlas_set_scheduler(task_rq(tsk), tsk,
 						    SCHED_ATLAS);
@@ -971,37 +977,13 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	assert_raw_spin_locked(&rq->lock);
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 
-	/* job can be NULL because put_prev_task is called after nr_runnable is
-	 * checked.
-	 * TODO: we can walk the job tree or the se tree.
-	 * walking the se tree is probably better or at least as much work as
-	 * wlaking the job tree, because #(jobs) <= #(tasks)
-	 */
-	for (atlas_job = pick_first_job(&atlas_rq->atlas_jobs);
-	     atlas_job && !task_on_rq_queued(atlas_job->tsk);
-	     atlas_job = pick_next_job(atlas_job)) {
-		struct task_struct *tsk = atlas_job->tsk;
-		if (!task_on_rq_queued(tsk)) {
-			atlas_debug(PICK_NEXT_TASK,
-				    "Task %s/%d blocked under %s", tsk->comm,
-				    task_pid_vnr(tsk), sched_name(tsk->policy));
-			/* Pull the task to ATLAS, to see the wakup event.
-			 * TODO: do this conditionally, when no other tasks are
-			 * runnable. The only reason ATLAS needs to see the
-			 * wakup is incrementing nr_running if it was
-			 * previously 0
-			 */
-			if (tsk->policy != SCHED_ATLAS)
-				atlas_set_scheduler(rq, tsk, SCHED_ATLAS);
-		}
-	}
+	atlas_job = select_job(&atlas_rq->atlas_jobs);
+	recover_job = select_job(&atlas_rq->recover_jobs);
 
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 
 	atlas_debug(PICK_NEXT_TASK, "Prev: " JOB_FMT, JOB_ARG(prev->atlas.job));
 	atlas_debug(PICK_NEXT_TASK, "Next: " JOB_FMT, JOB_ARG(atlas_job));
-
-	recover_job = select_recover_job(atlas_rq);
 
 	if ((atlas_job == NULL) && !not_runnable(&atlas_rq->atlas_jobs))
 		dec_nr_running(&atlas_rq->atlas_jobs);
