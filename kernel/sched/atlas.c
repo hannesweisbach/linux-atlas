@@ -597,30 +597,26 @@ void erase_task_job(struct atlas_job *s) {
  * Scheduler stuff
  */
 
+static void init_tree(struct atlas_job_tree *tree, struct atlas_rq *atlas_rq,
+		      const char *name)
+{
+	BUG_ON(tree == NULL);
+
+	tree->jobs = RB_ROOT;
+	tree->leftmost_job = NULL;
+	raw_spin_lock_init(&tree->lock);
+	tree->rq = rq_of(atlas_rq);
+	tree->nr_running = 0;
+	snprintf(tree->name, sizeof(tree->name), name);
+}
+
 void init_atlas_rq(struct atlas_rq *atlas_rq)
 {
 	printk(KERN_INFO "Initializing ATLAS runqueue on CPU %d\n",
 	       cpu_of(rq_of(atlas_rq)));
 
-	{
-		const size_t size = sizeof(atlas_rq->atlas_jobs.name);
-		atlas_rq->atlas_jobs.jobs = RB_ROOT;
-		atlas_rq->atlas_jobs.leftmost_job = NULL;
-		raw_spin_lock_init(&atlas_rq->atlas_jobs.lock);
-		atlas_rq->atlas_jobs.rq = rq_of(atlas_rq);
-		atlas_rq->atlas_jobs.nr_running = 0;
-		snprintf(atlas_rq->atlas_jobs.name, size, "ATLAS");
-	}
-
-	{
-		const size_t size = sizeof(atlas_rq->recover_jobs.name);
-		atlas_rq->recover_jobs.jobs = RB_ROOT;
-		atlas_rq->recover_jobs.leftmost_job = NULL;
-		raw_spin_lock_init(&atlas_rq->recover_jobs.lock);
-		atlas_rq->recover_jobs.rq = rq_of(atlas_rq);
-		atlas_rq->recover_jobs.nr_running = 0;
-		snprintf(atlas_rq->recover_jobs.name, size, "Recover");
-	}
+	init_tree(&atlas_rq->atlas_jobs, atlas_rq, "ATLAS");
+	init_tree(&atlas_rq->recover_jobs, atlas_rq, "Recover");
 
 	raw_spin_lock_init(&atlas_rq->lock);
 
