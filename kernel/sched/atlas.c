@@ -260,6 +260,7 @@ static inline void start_slack_timer(struct atlas_rq *atlas_rq,
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 
 	slack = ktime_add(slack, ktime_get());
+	dec_nr_running(&atlas_rq->atlas_jobs);
 
 	atlas_debug(TIMER, "Set slack timer for " JOB_FMT " to %lld",
 		    JOB_ARG(job), ktime_to_ms(slack));
@@ -1029,8 +1030,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 			atlas_set_scheduler(rq, atlas_job->tsk, SCHED_ATLAS);
 		start_slack_timer(atlas_rq, atlas_job, slack);
 	}
-	/* for slack */
-	dec_nr_running(&atlas_rq->atlas_jobs);
 
 	goto out_notask;
 
