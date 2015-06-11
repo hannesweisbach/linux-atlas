@@ -42,7 +42,6 @@
 #define SCHED_DEADLINE		6
 #ifdef CONFIG_ATLAS
 #define SCHED_ATLAS		7
-#define SCHED_ATLAS_RECOVER	8
 #endif
 
 /* Can be ORed in to make sure the process is reverted back to SCHED_NORMAL on fork */
