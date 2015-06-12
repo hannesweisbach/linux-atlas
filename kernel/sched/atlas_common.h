@@ -4,6 +4,9 @@
 #include <linux/printk.h>
 #include <linux/ktime.h>
 
+#include <linux/pid.h>
+#include <linux/pid_namespace.h>
+
 enum debug {
 	SYS_NEXT = 0,
 	SYS_SUBMIT,
@@ -73,6 +76,11 @@ static inline const char *job_rq_name(struct atlas_job *job)
 		return "";
 
 	return job->tree->name;
+}
+
+static inline pid_t task_tid(struct task_struct *tsk)
+{
+	return task_pid_nr_ns(tsk, task_active_pid_ns(tsk));
 }
 
 extern void sched_log(const char *fmt, ...);

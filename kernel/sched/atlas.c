@@ -482,7 +482,7 @@ void atlas_set_scheduler(struct rq *rq, struct task_struct *p, int policy)
 
 	if (p->policy == policy) {
 		WARN(1, "Task '%s' (%d') already scheduled under policy %s",
-		     p->comm, task_pid_vnr(p), sched_name(policy));
+		     p->comm, task_tid(p), sched_name(policy));
 		return;
 	}
 
@@ -505,7 +505,7 @@ void atlas_set_scheduler(struct rq *rq, struct task_struct *p, int policy)
 	running = task_current(rq, p);
 
 	atlas_debug(SWITCH_SCHED, "Task %s/%d from %s to %s%s%s", p->comm,
-		    task_pid_vnr(p), sched_name(p->policy), sched_name(policy),
+		    task_tid(p), sched_name(p->policy), sched_name(policy),
 		    queued ? ", on RQ" : "", running ? ", running" : "");
 
 	if (queued) {
@@ -847,7 +847,7 @@ static void dequeue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 
 	se->on_rq = 0;
 
-	atlas_debug(DEQUEUE, "Task %s/%d%s (%d/%d)", p->comm, task_pid_vnr(p),
+	atlas_debug(DEQUEUE, "Task %s/%d%s (%d/%d)", p->comm, task_tid(p),
 		    (flags & DEQUEUE_SLEEP) ? " (sleep)" : "", rq->nr_running,
 		    atlas_rq->atlas_jobs.nr_running);
 	if (atlas_rq->timer_target == ATLAS_NONE && !atlas_rq->nr_runnable) {
@@ -931,7 +931,7 @@ static struct atlas_job *select_job(struct atlas_job_tree *tree)
 		struct task_struct *tsk = job->tsk;
 		if (!task_on_rq_queued(tsk)) {
 			atlas_debug(PICK_NEXT_TASK, "Task %s/%d blocked",
-				    tsk->comm, task_pid_vnr(tsk));
+				    tsk->comm, task_tid(tsk));
 			/* Pull the task to ATLAS, to see the wakup event.
 			 * TODO: do this conditionally, when no other tasks are
 			 * runnable. The only reason ATLAS needs to see the
@@ -975,7 +975,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 
 	stop_timer(atlas_rq);
 	atlas_debug(PICK_NEXT_TASK, "Task %s/%d running in %s (%d/%d/%d)",
-		    prev->comm, task_pid_vnr(prev), sched_name(prev->policy),
+		    prev->comm, task_tid(prev), sched_name(prev->policy),
 		    rq->nr_running, atlas_rq->atlas_jobs.nr_running,
 		    rq->atlas.recover_jobs.nr_running);
 
@@ -1262,7 +1262,7 @@ void exit_atlas(struct task_struct *p)
 
 	if (p->policy == SCHED_ATLAS) {
 		printk(KERN_EMERG "Switching task %s/%d back to CFS", p->comm,
-		       task_pid_vnr(p));
+		       task_tid(p));
 		atlas_set_scheduler(task_rq(p), p, SCHED_NORMAL);
 	}
 
@@ -1270,7 +1270,7 @@ void exit_atlas(struct task_struct *p)
 		destroy_first_job(p);
 
 	printk(KERN_EMERG "Task %s/%d in %s is exiting (%d/%d/%d)\n", p->comm,
-	       task_pid_vnr(p), sched_name(p->policy), rq->nr_running,
+	       task_tid(p), sched_name(p->policy), rq->nr_running,
 	       atlas_rq->atlas_jobs.nr_running,
 	       atlas_rq->recover_jobs.nr_running);
 
@@ -1587,7 +1587,7 @@ SYSCALL_DEFINE0(atlas_next)
 		 * pending signal
 		 */
 		atlas_debug(SYS_NEXT, "Signal in task %s/%d", current->comm,
-			    task_pid_vnr(current));
+			    task_tid(current));
 		se->state = ATLAS_UNDEF;
 		__set_current_state(TASK_RUNNING);
 		return -EINTR;
@@ -1666,7 +1666,7 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 	if (task_tgid_vnr(current) != task_tgid_vnr(job->tsk)) {
 		atlas_debug_(SYS_SUBMIT,
 			     "Not allowed to submit jobs to task %s/%d",
-			     job->tsk->comm, task_pid_vnr(job->tsk));
+			     job->tsk->comm, task_tid(job->tsk));
 		ret = -EPERM;
 		goto err;
 	}
