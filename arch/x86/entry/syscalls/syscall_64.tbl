@@ -334,6 +334,7 @@
 325	common	mlock2			sys_mlock2
 326	common	atlas_next		sys_atlas_next
 327	64	atlas_submit		sys_atlas_submit
+328	common	atlas_remove		sys_atlas_remove
 
 #
 # x32-specific system call numbers start at 512 to avoid cache impact
