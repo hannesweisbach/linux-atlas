@@ -150,8 +150,11 @@ size_t print_rq(const struct rq *const rq, char *buf, size_t size)
 	size_t offset = 0;
 	const struct atlas_rq *const atlas = &rq->atlas;
 
-	offset += print_timeline(&atlas->atlas_jobs, &buf[offset], size - offset);
-	offset += print_timeline(&atlas->recover_jobs, &buf[offset], size - offset);
+	offset += print_timeline(&atlas->atlas_jobs, &buf[offset],
+				 size - offset);
+	offset += print_timeline(&atlas->recover_jobs, &buf[offset],
+				 size - offset);
+	offset += print_timeline(&atlas->cfs_jobs, &buf[offset], size - offset);
 
 	return offset;
 }
