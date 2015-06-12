@@ -828,12 +828,15 @@ static void check_preempt_curr_atlas(struct rq *rq, struct task_struct *p,
 	resched_curr(rq);
 }
 
-static void handle_deadline_misses(struct atlas_rq *atlas_rq);
+static inline bool has_execution_time_left(const struct atlas_job const *job)
+{
+	return ktime_compare(job->sexectime, ktime_set(0, 0)) > 0;
+}
 
 static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 {
 	unsigned long flags;
-	struct atlas_job *curr = pick_first_job(&atlas_rq->atlas_jobs);
+	struct atlas_job *job;
 
 	ktime_t now = ktime_get();
 
@@ -847,42 +850,32 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 
-	while (curr && unlikely(job_missed_deadline(curr, now))) {
-		struct atlas_job *next = pick_next_job(curr);
+	for (job = pick_first_job(&atlas_rq->atlas_jobs);
+	     job && job_missed_deadline(job, now);) {
+		struct atlas_job *next = pick_next_job(job);
 		atlas_debug(RUNQUEUE, "Removing " JOB_FMT " from the RQ (%lld)",
-			    JOB_ARG(curr), ktime_to_ns(now));
-		BUG_ON(curr->tree != &atlas_rq->atlas_jobs);
-		remove_job_from_tree(curr);
-		if (ktime_compare(curr->sexectime, ktime_set(0, 30000)) > 0) {
-			insert_job_into_tree(&rq->atlas.recover_jobs, curr);
+			    JOB_ARG(job), ktime_to_ns(now));
+		BUG_ON(!is_atlas_job(job));
+		remove_job_from_tree(job);
+		if (ktime_compare(job->sexectime, ktime_set(0, 30000)) > 0) {
+			insert_job_into_tree(&atlas_rq->recover_jobs, job);
 		} else {
-			insert_job_into_tree(&atlas_rq->cfs_jobs, curr);
+			insert_job_into_tree(&atlas_rq->cfs_jobs, job);
 		}
-		curr = next;
+		job = next;
+	}
+
+	for (job = pick_first_job(&atlas_rq->recover_jobs);
+	     job && !has_execution_time_left(job);) {
+		struct atlas_job *next = pick_next_job(job);
+		BUG_ON(!is_recover_job(job));
+		remove_job_from_tree(job);
+		insert_job_into_tree(&atlas_rq->cfs_jobs, job);
+
+		job = next;
 	}
 
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
-}
-
-static inline bool has_execution_time_left(const struct atlas_job const *job)
-{
-	return ktime_compare(job->sexectime, ktime_set(0, 0)) > 0;
-}
-
-static void handle_recover_misses(struct atlas_rq *atlas_rq)
-{
-	struct atlas_job *job;
-
-	for (job = pick_first_job(&atlas_rq->recover_jobs);
-	     job && !has_execution_time_left(job); job = pick_next_job(job)) {
-		BUG_ON(!is_recover_job(job));
-		remove_job_from_tree(job);
-
-		/* Task might have an ATLAS job or be stuck in ATLAS slack */
-		if (job->tsk->policy == SCHED_ATLAS)
-			atlas_set_scheduler(task_rq(job->tsk), job->tsk,
-					    SCHED_NORMAL);
-	}
 }
 
 static struct atlas_job *select_job(struct atlas_job_tree *tree)
@@ -932,7 +925,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		return NULL;
 
 	handle_deadline_misses(atlas_rq);
-	handle_recover_misses(atlas_rq);
 
 	if (not_runnable(&atlas_rq->atlas_jobs) &&
 	    not_runnable(&atlas_rq->recover_jobs)) {
