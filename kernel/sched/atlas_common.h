@@ -31,13 +31,15 @@ u32 is_flag_enabled(enum debug);
 
 static inline void inc_nr_running(struct atlas_job_tree *tree)
 {
-	add_nr_running(tree->rq, 1);
+	if (tree != &tree->rq->atlas.cfs_jobs)
+		add_nr_running(tree->rq, 1);
 	tree->nr_running += 1;
 }
 
 static inline void dec_nr_running(struct atlas_job_tree *tree)
 {
-	sub_nr_running(tree->rq, 1);
+	if (tree != &tree->rq->atlas.cfs_jobs)
+		sub_nr_running(tree->rq, 1);
 	tree->nr_running -= 1;
 }
 
@@ -59,6 +61,11 @@ static inline bool is_atlas_job(struct atlas_job *job)
 static inline bool is_recover_job(struct atlas_job *job)
 {
 	return &job->tree->rq->atlas.recover_jobs == job->tree;
+}
+
+static inline bool is_cfs_job(struct atlas_job *job)
+{
+	return &job->tree->rq->atlas.cfs_jobs == job->tree;
 }
 
 static inline struct atlas_job *
@@ -104,10 +111,7 @@ static inline const char *job_rq_name(struct atlas_job *job)
 	if (job == NULL)
 		return "";
 
-	if (job->tree == NULL)
-		return "CFS";
-	else
-		return job->tree->name;
+	return job->tree->name;
 }
 
 extern void sched_log(const char *fmt, ...);
