@@ -10,6 +10,7 @@
 enum debug {
 	SYS_NEXT = 0,
 	SYS_SUBMIT,
+	SYS_REMOVE,
 	ENQUEUE,
 	DEQUEUE,
 	PICK_NEXT_TASK,
@@ -86,7 +87,6 @@ static inline pid_t task_tid(struct task_struct *tsk)
 extern void sched_log(const char *fmt, ...);
 void update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
 			   ktime_t delta_exec);
-void remove_job_from_tree(struct atlas_job *const job);
 
 #define JOB_FMT "Job %s/%d/%lld (e: %lld/%lld, d: %lld/%lld, %s)"
 #define JOB_ARG(job)                                                           \

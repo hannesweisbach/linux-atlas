@@ -253,11 +253,92 @@ static void insert_job_into_tree(struct atlas_job_tree *tree,
 		tree->leftmost_job = &job->rb_node;
 }
 
-void remove_job_from_tree(struct atlas_job *const job)
+/*
+ * called on deadline miss/execution time depletion.  timelines does not need
+ * to be rebuilt.
+ */
+static void remove_depleted_job_from_tree(struct atlas_job_tree *tree)
 {
-	BUG_ON(job == NULL);
+	struct atlas_job *to_delete;
+	BUG_ON(tree == NULL);
+	BUG_ON(tree->leftmost_job == NULL);
+	assert_raw_spin_locked(&tree->rq->atlas.lock);
 
-	if (job->tree && job->tree->leftmost_job == &job->rb_node) {
+	to_delete = rb_entry(tree->leftmost_job, struct atlas_job, rb_node);
+	tree->leftmost_job = rb_next(tree->leftmost_job);
+	if (tree->leftmost_job == NULL) {
+		atlas_debug(RBTREE, "Removed last job from %s.", tree->name);
+		dec_nr_running(tree);
+	}
+
+	rb_erase(&to_delete->rb_node, &tree->jobs);
+	RB_CLEAR_NODE(&to_delete->rb_node);
+	to_delete->tree = NULL;
+}
+
+static void rebuild_timeline(struct atlas_job *curr)
+{
+
+	struct atlas_job *prev = pick_prev_job(curr);
+	/* TODO: extend execution time of curr */
+	for (; prev; curr = prev, prev = pick_prev_job(curr)) {
+		ktime_t new_deadline;
+		ktime_t gap;
+		ktime_t extended;
+
+		if (ktime_equal(prev->deadline, prev->sdeadline))
+			break;
+
+		atlas_debug(SYS_NEXT, "Extending execution "
+				      "time of " JOB_FMT,
+			    JOB_ARG(prev));
+		new_deadline = ktime_min(prev->deadline, job_start(curr));
+		gap = ktime_sub(new_deadline, prev->sdeadline);
+		prev->sdeadline = new_deadline;
+		extended = ktime_add(gap, prev->sexectime);
+
+		/* don't extend beyond the reservation */
+		prev->sexectime = ktime_min(prev->exectime, extended);
+
+		atlas_debug(SYS_NEXT, "Extended " JOB_FMT, JOB_ARG(prev));
+	}
+}
+
+/* general removal of jobs -> timeline needs to be rebuilt */
+static void remove_job_from_tree(struct atlas_job *const job)
+{
+	struct atlas_job *curr;
+	bool atlas_job;
+
+	BUG_ON(job == NULL);
+	BUG_ON(job->tree == NULL);
+	BUG_ON(!job_in_rq(job));
+	assert_raw_spin_locked(&job->tree->rq->atlas.lock);
+
+	{
+		struct atlas_rq *atlas_rq = &job->tree->rq->atlas;
+		if (atlas_rq->curr && atlas_rq->curr->job == job)
+			atlas_rq->curr->job = NULL;
+	}
+
+	/* To rebuild the timeline, pick the job that is scheduled after
+	 * the to-be-deleted job. If there is none, that means, that the
+	 * to-be-deleted job was the latest currently known job.
+	 * In that case, rebuild the timeline from the job preceding
+	 * the to-be-deleted job. Also, the deadline of the previous
+	 * job does not need to respect any following job (since now it
+	 * is the latest job).
+	 */
+	curr = pick_next_job(job);
+	if (curr == NULL) {
+		curr = pick_prev_job(job);
+		if (curr != NULL)
+			curr->sdeadline = curr->deadline;
+	}
+
+	atlas_job = is_atlas_job(job);
+
+	if (job->tree->leftmost_job == &job->rb_node) {
 		job->tree->leftmost_job = rb_next(job->tree->leftmost_job);
 		if (job->tree->leftmost_job == NULL) {
 			atlas_debug(RBTREE, "Removed last job from %s.",
@@ -269,6 +350,9 @@ void remove_job_from_tree(struct atlas_job *const job)
 	rb_erase(&job->rb_node, &job->tree->jobs);
 	RB_CLEAR_NODE(&job->rb_node);
 	job->tree = NULL;
+
+	if (atlas_job && curr != NULL)
+		rebuild_timeline(curr);
 }
 
 /*
@@ -891,28 +975,25 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 
 	for (job = pick_first_job(&atlas_rq->atlas_jobs);
-	     job && job_missed_deadline(job, now);) {
-		struct atlas_job *next = pick_next_job(job);
+	     job && job_missed_deadline(job, now);
+	     job = pick_first_job(&atlas_rq->atlas_jobs)) {
 		atlas_debug(RUNQUEUE, "Removing " JOB_FMT " from the RQ (%lld)",
 			    JOB_ARG(job), ktime_to_ns(now));
 		BUG_ON(!is_atlas_job(job));
-		remove_job_from_tree(job);
+		remove_depleted_job_from_tree(&atlas_rq->atlas_jobs);
 		if (ktime_compare(job->sexectime, ktime_set(0, 30000)) > 0) {
 			insert_job_into_tree(&atlas_rq->recover_jobs, job);
 		} else {
 			insert_job_into_tree(&atlas_rq->cfs_jobs, job);
 		}
-		job = next;
 	}
 
 	for (job = pick_first_job(&atlas_rq->recover_jobs);
-	     job && !has_execution_time_left(job);) {
-		struct atlas_job *next = pick_next_job(job);
+	     job && !has_execution_time_left(job);
+	     job = pick_first_job(&atlas_rq->recover_jobs)) {
 		BUG_ON(!is_recover_job(job));
-		remove_job_from_tree(job);
+		remove_depleted_job_from_tree(&atlas_rq->recover_jobs);
 		insert_job_into_tree(&atlas_rq->cfs_jobs, job);
-
-		job = next;
 	}
 
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
@@ -1430,42 +1511,17 @@ static void destroy_first_job(struct task_struct *tsk)
 		list_del(&job->list);
 		spin_unlock_irqrestore(jobs_lock, flags);
 	}
-	{
-		struct rq *rq = task_rq(tsk);
-		struct atlas_rq *atlas_rq = &rq->atlas;
-		if (atlas_rq->curr && atlas_rq->curr->job == job)
-			atlas_rq->curr->job = NULL;
-	}
 	if (job_in_rq(job)) {
 		struct rq *rq = task_rq(tsk);
 		struct atlas_rq *atlas_rq = &rq->atlas;
-		struct atlas_job *curr;
 		unsigned long flags;
-		const bool atlas_job = is_atlas_job(job);
-		/* TODO: activate when sched classes merged. */
-		/* BUG_ON(job->tree == NULL); */
 
 		atlas_debug_(SYS_NEXT, "Removing " JOB_FMT " from %s",
 			     JOB_ARG(job), job_rq_name(job));
 
 		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 
-		/* To rebuild the timeline, pick the job that is scheduled after
-		 * the to-be-deleted job. If there is none, that means, that the
-		 * to-be-deleted job was the latest currently known job.
-		 * In that case, rebuild the timeline from the job preceding
-		 * the to-be-deleted job. Also, the deadline of the previous
-		 * job does not need to respect any following job (since now it
-		 * is the latest job).
-		 */
-		curr = pick_next_job(job);
-		if (!curr) {
-			curr = pick_prev_job(job);
-			if (curr)
-				curr->sdeadline = curr->deadline;
-		}
-
-		if (job->tree == NULL && tsk->policy != SCHED_NORMAL) {
+		if (is_cfs_job(job) && tsk->policy != SCHED_NORMAL) {
 			/* CFS job finished in ATLAS -> put it back into CFS. */
 			WARN(1, "CFS job finished in ATLAS");
 			raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
@@ -1475,36 +1531,6 @@ static void destroy_first_job(struct task_struct *tsk)
 
 		remove_job_from_tree(job);
 
-		if (atlas_job && curr) {
-			struct atlas_job *prev = pick_prev_job(curr);
-			/* TODO: extend execution time of curr */
-			for (; prev; curr = prev, prev = pick_prev_job(curr)) {
-				ktime_t new_deadline;
-				ktime_t gap;
-				ktime_t extended;
-
-				if (ktime_equal(prev->deadline,
-						prev->sdeadline))
-					break;
-
-				atlas_debug(SYS_NEXT, "Extending execution "
-						      "time of " JOB_FMT,
-					    JOB_ARG(prev));
-				new_deadline = ktime_min(prev->deadline,
-							 job_start(curr));
-				gap = ktime_sub(new_deadline, prev->sdeadline);
-				prev->sdeadline = new_deadline;
-				extended = ktime_add(gap, prev->sexectime);
-
-				/* don't extend beyond the reservation */
-				prev->sexectime = ktime_min(prev->exectime,
-							    extended);
-
-				atlas_debug(SYS_NEXT, "Extended " JOB_FMT,
-					    JOB_ARG(job));
-			}
-		} else {
-		}
 
 		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 	}
@@ -1635,6 +1661,22 @@ out_timer:
 	return 0;
 }
 
+static int validate_tid(struct task_struct *tsk, pid_t pid, enum debug caller)
+{
+	if (tsk == NULL) {
+		atlas_debug_(caller, "No process with PID %d found.", pid);
+		return -ESRCH;
+	}
+
+	if (task_tgid_vnr(current) != task_tgid_vnr(tsk)) {
+		atlas_debug_(caller, "Not allowed to update jobs of task %s/%d",
+			     tsk->comm, task_tid(tsk));
+		return -EPERM;
+	}
+
+	return 0;
+}
+
 SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 		exectime, struct timeval __user *, deadline)
 {
@@ -1658,19 +1700,9 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 
 	rcu_read_lock();
 	job->tsk = find_task_by_vpid(pid);
-	if (!job->tsk) {
-		atlas_debug_(SYS_SUBMIT, "No process with PID %d found.", pid);
-		ret = -ESRCH;
+	ret = validate_tid(job->tsk, pid, SYS_SUBMIT);
+	if (ret != 0)
 		goto err;
-	}
-
-	if (task_tgid_vnr(current) != task_tgid_vnr(job->tsk)) {
-		atlas_debug_(SYS_SUBMIT,
-			     "Not allowed to submit jobs to task %s/%d",
-			     job->tsk->comm, task_tid(job->tsk));
-		ret = -EPERM;
-		goto err;
-	}
 
 	schedule_job(job);
 
@@ -1686,5 +1718,47 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 err:
 	rcu_read_unlock();
 	job_dealloc(job);
+	return ret;
+}
+
+SYSCALL_DEFINE2(atlas_remove, pid_t, pid, uint64_t, id)
+{
+	struct task_struct *tsk;
+	struct atlas_job *job, *tmp;
+	unsigned long flags;
+	int ret = 0;
+	bool found_job = false;
+
+	rcu_read_lock();
+	tsk = find_task_by_vpid(pid);
+	ret = validate_tid(tsk, pid, SYS_REMOVE);
+	if (ret != 0)
+		goto out;
+
+	spin_lock_irqsave(&tsk->atlas.jobs_lock, flags);
+	list_for_each_entry_safe(job, tmp, &tsk->atlas.jobs, list)
+	{
+		if (job->id == id) {
+			raw_spinlock_t *lock = &job->tree->rq->atlas.lock;
+			raw_spin_lock(lock);
+			remove_job_from_tree(job);
+			list_del(&job->list);
+			job_dealloc(job);
+			raw_spin_unlock(lock);
+			found_job = true;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&tsk->atlas.jobs_lock, flags);
+
+	if (!found_job) {
+		atlas_debug_(SYS_REMOVE,
+			     "No job with id %llu for task %s/%d found", id,
+			     tsk->comm, task_tid(tsk));
+		ret = -EINVAL;
+	}
+
+out:
+	rcu_read_unlock();
 	return ret;
 }
