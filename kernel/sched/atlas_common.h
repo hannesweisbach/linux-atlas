@@ -86,7 +86,6 @@ static inline pid_t task_tid(struct task_struct *tsk)
 extern void sched_log(const char *fmt, ...);
 void update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
 			   ktime_t delta_exec);
-void atlas_set_scheduler(struct rq *, struct task_struct *, int policy);
 void remove_job_from_tree(struct atlas_job *const job);
 
 #define JOB_FMT "Job %s/%d/%lld (e: %lld/%lld, d: %lld/%lld, %s)"

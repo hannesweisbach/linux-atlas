@@ -475,7 +475,8 @@ static const char *sched_name(int policy)
  * duplication :/
  */
 
-void atlas_set_scheduler(struct rq *rq, struct task_struct *p, int policy)
+static void atlas_set_scheduler(struct rq *rq, struct task_struct *p,
+				int policy)
 {
 	const struct sched_class *new_class, *prev_class;
 	int queued, running;
