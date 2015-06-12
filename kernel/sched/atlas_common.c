@@ -113,15 +113,17 @@ u32 is_flag_enabled(enum debug flag)
 size_t print_atlas_job(const struct atlas_job const *job, char *buf,
 		       size_t size)
 {
-	if (!job) {
-		return scnprintf(buf, size, "no jobs\n");
-	} else {
+	if (job != NULL) {
 		s64 start = ktime_to_ms(
 				ktime_sub(job->sdeadline, job->sexectime));
-		return scnprintf(buf, size, "Job %5llu %8lld - %8lld %s\n",
+		return scnprintf(buf, size, "Job %5llu %8lld - %8lld (%4lld) "
+					    "%s/%5d %s\n",
 				 job->id, start, ktime_to_ms(job->sdeadline),
+				 ktime_to_ms(job->sexectime), job->tsk->comm,
+				 task_tid(job->tsk),
 				 !task_on_rq_queued(job->tsk) ? "blocked" : "");
 	}
+	return 0;
 }
 
 size_t print_timeline(const struct atlas_job_tree *tree, char *buf,
@@ -132,16 +134,16 @@ size_t print_timeline(const struct atlas_job_tree *tree, char *buf,
 	struct rq *rq = task_rq(current);
 
 	offset += scnprintf(&buf[offset], size - offset,
-			    "%s (%d/%d/%d) (%d/%d):\n", name, rq->nr_running,
-			    rq->atlas.nr_runnable,
-			    rq->atlas_recover.nr_runnable,
-			    job->tsk->atlas.nr_atlas_jobs, rq->atlas.nr_jobs);
+			    "%s (%d/%d/%d/%d) (%d):\n", tree->name,
+			    rq->nr_running, rq->atlas.atlas_jobs.nr_running,
+			    rq->atlas.recover_jobs.nr_running,
+			    rq->atlas.cfs_jobs.nr_running,
+			    rq_nr_jobs(&tree->jobs));
 
 	for (job = pick_first_job(tree); job; job = pick_next_job(job)) {
 		offset += print_atlas_job(job, &buf[offset], size - offset);
 	}
 
-	offset += scnprintf(&buf[offset], size - offset, "\n");
 	return offset;
 }
 
@@ -152,9 +154,12 @@ size_t print_rq(const struct rq *const rq, char *buf, size_t size)
 
 	offset += print_timeline(&atlas->atlas_jobs, &buf[offset],
 				 size - offset);
-	offset += print_timeline(&atlas->recover_jobs, &buf[offset],
-				 size - offset);
-	offset += print_timeline(&atlas->cfs_jobs, &buf[offset], size - offset);
+	if (atlas->recover_jobs.leftmost_job != NULL)
+		offset += print_timeline(&atlas->recover_jobs, &buf[offset],
+					 size - offset);
+	if (atlas->cfs_jobs.leftmost_job != NULL)
+		offset += print_timeline(&atlas->cfs_jobs, &buf[offset],
+					 size - offset);
 
 	return offset;
 }
