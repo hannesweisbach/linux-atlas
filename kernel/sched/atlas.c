@@ -618,6 +618,7 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 
 	init_tree(&atlas_rq->atlas_jobs, atlas_rq, "ATLAS");
 	init_tree(&atlas_rq->recover_jobs, atlas_rq, "Recover");
+	init_tree(&atlas_rq->cfs_jobs, atlas_rq, "CFS");
 
 	raw_spin_lock_init(&atlas_rq->lock);
 
@@ -852,36 +853,10 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 			    JOB_ARG(curr), ktime_to_ns(now));
 		BUG_ON(curr->tree != &atlas_rq->atlas_jobs);
 		remove_job_from_tree(curr);
-		{
-			/*
-			 * if task of curr is still in ATLAS
-			 * . put in ATLAS-Recover if sexectime > 0
-			 * . put in CFS otherwise
-			 * TODO: optimize: don't migrate if the next job in the
-			 * schedule is for the same task and has less than
-			 * epsilon slack. this avoids migrating the task right
-			 * back into ATLAS
-			 */
-			if (ktime_compare(curr->sexectime,
-					  ktime_set(0, 30000)) > 0) {
-				struct rq *rq = rq_of(atlas_rq);
-				atlas_debug(RUNQUEUE,
-					    "Moving " JOB_FMT " to Recover RQ",
-					    JOB_ARG(curr));
-				insert_job_into_tree(&rq->atlas.recover_jobs,
-						     curr);
-			} else {
-				/* TODO: add to CFS queue */
-				if (curr->tsk->policy != SCHED_NORMAL) {
-					raw_spin_unlock_irqrestore(
-							&atlas_rq->lock, flags);
-					atlas_set_scheduler(rq_of(atlas_rq),
-							    curr->tsk,
-							    SCHED_NORMAL);
-					raw_spin_lock_irqsave(&atlas_rq->lock,
-							      flags);
-			  }
-			}
+		if (ktime_compare(curr->sexectime, ktime_set(0, 30000)) > 0) {
+			insert_job_into_tree(&rq->atlas.recover_jobs, curr);
+		} else {
+			insert_job_into_tree(&atlas_rq->cfs_jobs, curr);
 		}
 		curr = next;
 	}
@@ -951,19 +926,23 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	unsigned long flags;
 	ktime_t slack = ktime_set(KTIME_SEC_MAX, 0);
 
-	if (not_runnable(&atlas_rq->atlas_jobs) &&
-	    not_runnable(&atlas_rq->recover_jobs))
+	if (has_no_jobs(&atlas_rq->atlas_jobs) &&
+	    has_no_jobs(&atlas_rq->recover_jobs) &&
+	    has_no_jobs(&atlas_rq->cfs_jobs))
 		return NULL;
 
 	handle_deadline_misses(atlas_rq);
 	handle_recover_misses(atlas_rq);
 
 	if (not_runnable(&atlas_rq->atlas_jobs) &&
-	    not_runnable(&atlas_rq->recover_jobs))
-		return NULL;
+	    not_runnable(&atlas_rq->recover_jobs)) {
+		if (has_no_jobs(&atlas_rq->cfs_jobs))
+			return NULL;
+		else
+			goto out_notask;
+	}
 
 	stop_timer(atlas_rq);
-
 	atlas_debug(PICK_NEXT_TASK, "Task %s/%d running in %s (%d/%d/%d)",
 		    prev->comm, task_pid_vnr(prev), sched_name(prev->policy),
 		    rq->nr_running, atlas_rq->atlas_jobs.nr_running,
@@ -1065,6 +1044,12 @@ out_task:
 	return atlas_task_of(atlas_rq->curr);
 
 out_notask:
+	/* make sure all CFS tasks are runnable */
+	for (job = pick_first_job(&atlas_rq->cfs_jobs); job;
+	     job = pick_next_job(job)) {
+		if (job->tsk->policy != SCHED_NORMAL)
+			atlas_set_scheduler(rq, job->tsk, SCHED_NORMAL);
+	}
 	/* no task because of:
 	 * - no jobs -> inc happens on submission of new job
 	 * - slack timer -> inc happens on timeout.
