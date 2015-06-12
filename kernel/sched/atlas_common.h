@@ -29,45 +29,6 @@ enum debug {
 
 u32 is_flag_enabled(enum debug);
 
-static inline void inc_nr_running(struct atlas_job_tree *tree)
-{
-	if (tree != &tree->rq->atlas.cfs_jobs)
-		add_nr_running(tree->rq, 1);
-	tree->nr_running += 1;
-}
-
-static inline void dec_nr_running(struct atlas_job_tree *tree)
-{
-	if (tree != &tree->rq->atlas.cfs_jobs)
-		sub_nr_running(tree->rq, 1);
-	tree->nr_running -= 1;
-}
-
-static inline bool not_runnable(struct atlas_job_tree *tree)
-{
-	return tree->nr_running == 0;
-}
-
-static inline bool has_no_jobs(struct atlas_job_tree *tree)
-{
-	return tree->leftmost_job == NULL;
-}
-
-static inline bool is_atlas_job(struct atlas_job *job)
-{
-	return &job->tree->rq->atlas.atlas_jobs == job->tree;
-}
-
-static inline bool is_recover_job(struct atlas_job *job)
-{
-	return &job->tree->rq->atlas.recover_jobs == job->tree;
-}
-
-static inline bool is_cfs_job(struct atlas_job *job)
-{
-	return &job->tree->rq->atlas.cfs_jobs == job->tree;
-}
-
 static inline struct atlas_job *
 pick_first_job(const struct atlas_job_tree *tree)
 {

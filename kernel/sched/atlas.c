@@ -55,6 +55,45 @@ void sched_log(const char *fmt, ...)
 	preempt_enable();
 }
 
+static inline void inc_nr_running(struct atlas_job_tree *tree)
+{
+	if (tree != &tree->rq->atlas.cfs_jobs)
+		add_nr_running(tree->rq, 1);
+	tree->nr_running += 1;
+}
+
+static inline void dec_nr_running(struct atlas_job_tree *tree)
+{
+	if (tree != &tree->rq->atlas.cfs_jobs)
+		sub_nr_running(tree->rq, 1);
+	tree->nr_running -= 1;
+}
+
+static inline bool not_runnable(struct atlas_job_tree *tree)
+{
+	return tree->nr_running == 0;
+}
+
+static inline bool has_no_jobs(struct atlas_job_tree *tree)
+{
+	return tree->leftmost_job == NULL;
+}
+
+static inline bool is_atlas_job(struct atlas_job *job)
+{
+	return &job->tree->rq->atlas.atlas_jobs == job->tree;
+}
+
+static inline bool is_recover_job(struct atlas_job *job)
+{
+	return &job->tree->rq->atlas.recover_jobs == job->tree;
+}
+
+static inline bool is_cfs_job(struct atlas_job *job)
+{
+	return &job->tree->rq->atlas.cfs_jobs == job->tree;
+}
+
 static struct atlas_job *pick_last_job(struct atlas_job_tree *tree)
 {
 	struct rb_node *last = rb_last(&tree->jobs);
@@ -90,7 +129,12 @@ static inline ktime_t ktime_min(ktime_t a, ktime_t b)
 	return ns_to_ktime(min(ktime_to_ns(a), ktime_to_ns(b)));
 }
 
-static inline int job_missed_deadline(struct atlas_job *s, ktime_t now)
+static inline bool has_execution_time_left(const struct atlas_job const *job)
+{
+	return ktime_compare(job->sexectime, ktime_set(0, 0)) > 0;
+}
+
+static inline bool job_missed_deadline(struct atlas_job *s, ktime_t now)
 {
 	return ktime_compare(s->sdeadline, now) <= 0;
 }
@@ -826,11 +870,6 @@ static void check_preempt_curr_atlas(struct rq *rq, struct task_struct *p,
 	       p->policy != SCHED_ATLAS);
 
 	resched_curr(rq);
-}
-
-static inline bool has_execution_time_left(const struct atlas_job const *job)
-{
-	return ktime_compare(job->sexectime, ktime_set(0, 0)) > 0;
 }
 
 static void handle_deadline_misses(struct atlas_rq *atlas_rq)
