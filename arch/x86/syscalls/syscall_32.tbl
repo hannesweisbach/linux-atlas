@@ -367,4 +367,5 @@
 358	i386	execveat		sys_execveat			stub32_execveat
 359     i386	atlas_next		sys_atlas_next
 360     i386	atlas_submit		sys_atlas_submit
+362     i386	atlas_remove		sys_atlas_remove
 
