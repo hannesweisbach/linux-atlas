@@ -144,16 +144,9 @@ static inline struct rq *rq_of(struct atlas_rq *atlas_rq)
 	return container_of(atlas_rq, struct rq, atlas);
 }
 
-static inline struct atlas_job *
-job_alloc(const uint64_t id, const ktime_t exectime, const ktime_t deadline)
+static void set_job_times(struct atlas_job *job, const ktime_t exectime,
+			  const ktime_t deadline)
 {
-	struct atlas_job *job = kzalloc(sizeof(struct atlas_job), GFP_KERNEL);
-	if (!job) {
-		goto out;
-	}
-
-	INIT_LIST_HEAD(&job->list);
-	RB_CLEAR_NODE(&job->rb_node);
 	job->deadline = job->sdeadline = deadline;
 	/* if the deadline is already in the past,
 	 * handle_deadline_misses() will move the task from ATLAS.
@@ -165,6 +158,19 @@ job_alloc(const uint64_t id, const ktime_t exectime, const ktime_t deadline)
 	} else {
 		job->exectime = job->sexectime = exectime;
 	}
+}
+
+static inline struct atlas_job *
+job_alloc(const uint64_t id, const ktime_t exectime, const ktime_t deadline)
+{
+	struct atlas_job *job = kzalloc(sizeof(struct atlas_job), GFP_KERNEL);
+	if (!job) {
+		goto out;
+	}
+
+	INIT_LIST_HEAD(&job->list);
+	RB_CLEAR_NODE(&job->rb_node);
+	set_job_times(job, exectime, deadline);
 	job->id = id;
 	job->tsk = NULL;
 	job->root = NULL;
@@ -789,8 +795,8 @@ static inline void update_stats_curr_start(struct rq *rq,
 	atlas_task_of(se)->se.exec_start = rq_clock_task(rq);
 }
 
-void update_execution_time(struct atlas_rq *atlas_rq, struct atlas_job *job,
-			   ktime_t delta_exec)
+static void update_execution_time(struct atlas_rq *atlas_rq,
+				  struct atlas_job *job, ktime_t delta_exec)
 {
 	assert_raw_spin_locked(&atlas_rq->lock);
 
@@ -1718,6 +1724,79 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 err:
 	rcu_read_unlock();
 	job_dealloc(job);
+	return ret;
+}
+
+SYSCALL_DEFINE4(atlas_update, pid_t, pid, uint64_t, id, struct timeval __user *,
+		exectime, struct timeval __user *, deadline)
+{
+	struct timeval lexectime;
+	struct timeval ldeadline;
+	struct task_struct *tsk;
+	struct atlas_job *job;
+	unsigned long flags;
+	int ret = 0;
+	bool found_job = false;
+
+	if ((exectime == NULL) && (deadline == NULL))
+		return 0;
+
+	if (((exectime != NULL) &&
+	     copy_from_user(&lexectime, exectime, sizeof(struct timeval))) ||
+	    ((deadline != NULL) &&
+	     copy_from_user(&ldeadline, deadline, sizeof(struct timeval)))) {
+		atlas_debug_(SYS_UPDATE, "Invalid struct timeval pointers.");
+		return -EFAULT;
+	}
+
+	rcu_read_lock();
+	tsk = find_task_by_vpid(pid);
+	ret = validate_tid(tsk, pid, SYS_UPDATE);
+	if (ret != 0)
+		goto out;
+
+	spin_lock_irqsave(&tsk->atlas.jobs_lock, flags);
+	list_for_each_entry(job, &tsk->atlas.jobs, list)
+	{
+		if (job->id == id) {
+			ktime_t deadline_;
+			ktime_t exectime_;
+			raw_spin_lock(&job->tree->rq->atlas.lock);
+			if (deadline != NULL)
+				deadline_ = timeval_to_ktime(ldeadline);
+			else
+				deadline_ = job->deadline;
+			if (exectime != NULL)
+				exectime_ = timeval_to_ktime(lexectime);
+			else
+				exectime_ = job->exectime;
+			if (ktime_compare(deadline_, job->deadline) != 0) {
+				struct atlas_job_tree *tmp = job->tree;
+				remove_job_from_tree(job);
+				set_job_times(job, timeval_to_ktime(lexectime),
+					      deadline_);
+				insert_job_into_tree(tmp, job);
+			} else {
+				set_job_times(job, timeval_to_ktime(lexectime),
+					      deadline_);
+				if (is_atlas_job(job))
+					rebuild_timeline(job);
+			}
+			raw_spin_unlock(&job->tree->rq->atlas.lock);
+			found_job = true;
+		}
+	}
+	spin_unlock_irqrestore(&tsk->atlas.jobs_lock, flags);
+
+	if (!found_job) {
+		atlas_debug_(SYS_UPDATE,
+			     "No job with id %llu for task %s/%d found", id,
+			     tsk->comm, task_tid(tsk));
+		ret = -EINVAL;
+	}
+
+out:
+	rcu_read_unlock();
 	return ret;
 }
 

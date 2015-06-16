@@ -335,9 +335,10 @@
 326	common	copy_file_range		sys_copy_file_range
 327	64	preadv2			sys_preadv2
 328	64	pwritev2		sys_pwritev2
-509	common	atlas_next		sys_atlas_next
-510	64	atlas_submit		sys_atlas_submit
-511	common	atlas_remove		sys_atlas_remove
+500	common	atlas_next		sys_atlas_next
+501	64	atlas_submit		sys_atlas_submit
+502	common	atlas_remove		sys_atlas_remove
+503	common	atlas_update		sys_atlas_update
 
 #
 # x32-specific system call numbers start at 512 to avoid cache impact

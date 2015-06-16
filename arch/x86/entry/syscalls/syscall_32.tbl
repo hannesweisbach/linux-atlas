@@ -386,6 +386,7 @@
 377	i386	copy_file_range		sys_copy_file_range
 378	i386	preadv2			sys_preadv2			compat_sys_preadv2
 379	i386	pwritev2		sys_pwritev2			compat_sys_pwritev2
-509     i386	atlas_next		sys_atlas_next
-510     i386	atlas_submit		sys_atlas_submit
-511     i386	atlas_remove		sys_atlas_remove
+500     i386	atlas_next		sys_atlas_next
+501     i386	atlas_submit		sys_atlas_submit
+502     i386	atlas_remove		sys_atlas_remove
+503     i386	atlas_update		sys_atlas_update
