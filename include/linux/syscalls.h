@@ -877,6 +877,9 @@ asmlinkage long sys_atlas_next(void);
 asmlinkage long sys_atlas_submit(pid_t pid, uint64_t id,
 				 struct timeval __user *exectime,
 				 struct timeval __user *deadline);
+asmlinkage long sys_atlas_update(pid_t pid, uint64_t id,
+				 struct timeval __user *exectime,
+				 struct timeval __user *deadline);
 asmlinkage long sys_atlas_remove(pid_t pid, uint64_t id);
 #endif
 

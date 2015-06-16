@@ -386,4 +386,5 @@
 377     i386	atlas_next		sys_atlas_next
 378     i386	atlas_submit		sys_atlas_submit
 379     i386	atlas_remove		sys_atlas_remove
+380     i386	atlas_update		sys_atlas_update
 
