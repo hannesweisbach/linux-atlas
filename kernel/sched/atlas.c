@@ -429,7 +429,6 @@ static void stop_slack_timer(struct atlas_rq *atlas_rq)
 		return;
 
 	if (hrtimer_cancel(&atlas_rq->timer)) {
-		resched_curr(rq_of(atlas_rq));
 		inc_nr_running(&atlas_rq->atlas_jobs);
 
 		atlas_rq->timer_target = ATLAS_NONE;
@@ -462,7 +461,7 @@ static void stop_job_timer(struct atlas_rq *atlas_rq)
 
 static inline void stop_timer(struct atlas_rq *atlas_rq)
 {
-	assert_raw_spin_locked(&rq_of(atlas_rq)->lock);
+	assert_raw_spin_locked(&atlas_rq->lock);
 
 	// BUG_ON(atlas_rq->advance_in_cfs && atlas_rq->timer_target !=
 	// ATLAS_SLACK && !(atlas_rq->pending_work &
@@ -1046,6 +1045,8 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	unsigned long flags;
 	ktime_t slack = ktime_set(KTIME_SEC_MAX, 0);
 
+	assert_raw_spin_locked(&rq->lock);
+
 	if (has_no_jobs(&atlas_rq->atlas_jobs) &&
 	    has_no_jobs(&atlas_rq->recover_jobs) &&
 	    has_no_jobs(&atlas_rq->cfs_jobs))
@@ -1061,20 +1062,21 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 			goto out_notask;
 	}
 
-	stop_timer(atlas_rq);
 	atlas_debug(PICK_NEXT_TASK, "Task %s/%d running in %s (%d/%d/%d)",
 		    prev->comm, task_tid(prev), sched_name(prev->policy),
 		    rq->nr_running, atlas_rq->atlas_jobs.nr_running,
 		    rq->atlas.recover_jobs.nr_running);
 
+	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+
+	stop_timer(atlas_rq);
 	BUG_ON(atlas_rq->timer_target == ATLAS_SLACK);
 	BUG_ON(atlas_rq->timer_target == ATLAS_JOB);
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 	BUG_ON(atlas_rq->slack_task);
 
 
-	assert_raw_spin_locked(&rq->lock);
-	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+	debug_rq(rq);
 
 	atlas_job = select_job(&atlas_rq->atlas_jobs);
 	recover_job = select_job(&atlas_rq->recover_jobs);
@@ -1341,12 +1343,14 @@ void exit_atlas(struct task_struct *p)
 
 	hrtimer_cancel(&p->atlas.timer);
 
+	raw_spin_lock(&atlas_rq->lock);
+
 	if (p == atlas_rq->slack_task) {
-		preempt_disable();
 		stop_timer(atlas_rq);
 		atlas_rq->slack_task = NULL;
-		preempt_enable();
 	}
+
+	raw_spin_unlock(&atlas_rq->lock);
 
 	if (p->policy == SCHED_ATLAS) {
 		printk(KERN_EMERG "Switching task %s/%d back to CFS", p->comm,
@@ -1357,12 +1361,13 @@ void exit_atlas(struct task_struct *p)
 	for (; !list_empty(&p->atlas.jobs);)
 		destroy_first_job(p);
 
+	task_rq_unlock(rq, p, &flags);
+
 	printk(KERN_EMERG "Task %s/%d in %s is exiting (%d/%d/%d)\n", p->comm,
 	       task_tid(p), sched_name(p->policy), rq->nr_running,
 	       atlas_rq->atlas_jobs.nr_running,
 	       atlas_rq->recover_jobs.nr_running);
 
-	task_rq_unlock(rq, p, &flags);
 }
 
 const struct sched_class atlas_sched_class = {
@@ -1537,7 +1542,6 @@ static void destroy_first_job(struct task_struct *tsk)
 
 		remove_job_from_tree(job);
 
-
 		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 	}
 
@@ -1546,26 +1550,22 @@ static void destroy_first_job(struct task_struct *tsk)
 
 SYSCALL_DEFINE0(atlas_next)
 {
-	struct atlas_job *next_job = NULL;
-	struct sched_atlas_entity *se = &current->atlas;
-	struct rq *rq;
-	struct atlas_rq *atlas_rq;
 	unsigned long flags;
+	struct rq *rq = task_rq_lock(current, &flags);
+	struct atlas_rq *atlas_rq = &rq->atlas;
+	struct sched_atlas_entity *se = &current->atlas;
+	struct atlas_job *next_job = NULL;
 
 	hrtimer_cancel(&se->timer);	
 	//reset rq timer
 	//FIXME:
 
-	preempt_disable();
-	
-	rq = task_rq(current);
-	atlas_rq = &rq->atlas;
-
-	raw_spin_lock_irqsave(&rq->lock, flags);
 
 	sched_log("NEXT pid=%d", current->pid);
-	
+
+	raw_spin_lock(&atlas_rq->lock);
 	stop_timer(atlas_rq);
+	raw_spin_unlock(&atlas_rq->lock);
 
 	if (current->sched_class == &atlas_sched_class) {
 		update_rq_clock(rq);
@@ -1591,12 +1591,10 @@ SYSCALL_DEFINE0(atlas_next)
 	if (!next_job && current->policy != SCHED_NORMAL)
 		atlas_set_scheduler(rq, current, SCHED_NORMAL);
 
-	raw_spin_unlock_irqrestore(&rq->lock, flags);
-
 	if (next_job)
 		goto out_timer;
 
-	preempt_enable();
+	task_rq_unlock(rq, current, &flags);
 	se->state = ATLAS_BLOCKED;
 
 	for(;;) {
@@ -1629,17 +1627,17 @@ SYSCALL_DEFINE0(atlas_next)
 	__set_current_state(TASK_RUNNING);
 	se->state = ATLAS_RUNNING;
 
-	preempt_disable();
+	rq = task_rq_lock(current, &flags);
 
 out_timer:
 	se->flags &= ~ATLAS_INIT;
-	set_tsk_need_resched(current);
+	BUG_ON(rq->curr == NULL);
+	resched_curr(rq);
 
 	atlas_debug_(SYS_NEXT,
 		     "Returning with " JOB_FMT " Job timer set to %lldms",
 		     JOB_ARG(next_job), ktime_to_ms(next_job->deadline));
 
-	raw_spin_lock_irqsave(&rq->lock, flags);
 	if (next_job->root == NULL && current->policy != SCHED_NORMAL) {
 		/* Staying in ATLAS or Recover could mean to never run again (if
 		 * there is no job in the future)
@@ -1650,8 +1648,8 @@ out_timer:
 		/* Avoid running in CFS while another task is in slacktime. */
 		atlas_set_scheduler(rq, current, SCHED_ATLAS);
 	}
-	raw_spin_unlock_irqrestore(&rq->lock, flags);
 
+	task_rq_unlock(rq, current, &flags);
 	/*
 	 * The se-timer causes SIGXCPU to be delivered to userspace. If deadline
 	 * has alredy been missed, the timer callback is executed
@@ -1661,8 +1659,6 @@ out_timer:
 	hrtimer_start(&se->timer, next_job->deadline, HRTIMER_MODE_ABS_PINNED);
 
 	sched_log("NEXT pid=%d job=%p", current->pid, current->atlas.job);
-
-	preempt_enable();
 
 	return 0;
 }
