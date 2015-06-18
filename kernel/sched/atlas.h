@@ -9,7 +9,6 @@ struct atlas_job_tree;
 struct atlas_job {
 	struct list_head list;
 	struct rb_node rb_node;
-	struct rb_root *root;
 	struct atlas_job_tree *tree;
 	struct task_struct *tsk;
 	ktime_t exectime; //relative
