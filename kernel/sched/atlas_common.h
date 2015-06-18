@@ -89,8 +89,7 @@ extern void sched_log(const char *fmt, ...);
 
 #define JOB_FMT "Job %s/%d/%lld (e: %lld/%lld, d: %lld/%lld, %s)"
 #define JOB_ARG(job)                                                           \
-	(job) ? (job)->tsk->comm : "(none)",                                   \
-			(job) ? task_pid_vnr(job->tsk) : 0,                    \
+	(job) ? (job)->tsk->comm : "(none)", (job) ? task_tid(job->tsk) : 0,   \
 			(job) ? job->id : -1,                                  \
 			(job) ? ktime_to_ms((job)->sexectime) : -1,            \
 			(job) ? ktime_to_ms((job)->exectime) : -1,             \
