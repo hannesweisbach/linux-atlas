@@ -137,9 +137,7 @@ size_t print_rqs(char *buf, size_t size)
 	{
 		unsigned long flags;
 		struct rq *rq = cpu_rq(cpu);
-		raw_spin_lock_irqsave(&rq->lock, flags);
 		offset += print_rq(rq, &buf[offset], size - offset);
-		raw_spin_unlock_irqrestore(&rq->lock, flags);
 	}
 
 	return offset;
