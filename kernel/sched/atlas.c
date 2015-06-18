@@ -1602,7 +1602,10 @@ SYSCALL_DEFINE4(atlas_update, pid_t, pid, uint64_t, id, struct timeval __user *,
 		if (job->id == id) {
 			ktime_t deadline_;
 			ktime_t exectime_;
+			struct atlas_job_tree *tmp = job->tree;
+
 			raw_spin_lock(&job->tree->rq->atlas.lock);
+
 			if (deadline != NULL)
 				deadline_ = timeval_to_ktime(ldeadline);
 			else
@@ -1611,19 +1614,14 @@ SYSCALL_DEFINE4(atlas_update, pid_t, pid, uint64_t, id, struct timeval __user *,
 				exectime_ = timeval_to_ktime(lexectime);
 			else
 				exectime_ = job->exectime;
-			if (ktime_compare(deadline_, job->deadline) != 0) {
-				struct atlas_job_tree *tmp = job->tree;
-				remove_job_from_tree(job);
-				set_job_times(job, timeval_to_ktime(lexectime),
-					      deadline_);
-				insert_job_into_tree(tmp, job);
-			} else {
-				set_job_times(job, timeval_to_ktime(lexectime),
-					      deadline_);
-				if (is_atlas_job(job))
-					rebuild_timeline(job);
-			}
+
+			remove_job_from_tree(job);
+			set_job_times(job, timeval_to_ktime(lexectime),
+				      deadline_);
+			insert_job_into_tree(tmp, job);
+
 			raw_spin_unlock(&job->tree->rq->atlas.lock);
+
 			found_job = true;
 		}
 	}
