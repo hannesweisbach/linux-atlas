@@ -1259,6 +1259,7 @@ void exit_atlas(struct task_struct *p)
 	       atlas_rq->recover_jobs.nr_running);
 }
 
+// clang-format off
 const struct sched_class atlas_sched_class = {
 	.next               = &fair_sched_class,
 
@@ -1298,6 +1299,7 @@ const struct sched_class atlas_sched_class = {
 	.get_rr_interval    = get_rr_interval_atlas,
 	.update_curr        = update_curr_atlas,
 };
+// clang-format on
 
 /*
  * called when a process missed its deadline; called from irq context
