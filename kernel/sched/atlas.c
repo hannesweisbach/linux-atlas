@@ -612,11 +612,8 @@ static void atlas_set_scheduler(struct rq *rq, struct task_struct *p,
 	const struct sched_class *new_class, *prev_class;
 	int queued, running;
 
-	if (p->policy == policy) {
-		WARN(1, "Task '%s' (%d') already scheduled under policy %s",
-		     p->comm, task_tid(p), sched_name(policy));
+	if (p->policy == policy)
 		return;
-	}
 
 	/* may grab non-irq protected spin_locks */
 	BUG_ON(in_interrupt());
@@ -1068,9 +1065,7 @@ static struct atlas_job *select_job(struct atlas_job_tree *tree)
 			 * wakup is incrementing nr_running if it was
 			 * previously 0
 			 */
-			if (tsk->policy != SCHED_ATLAS)
-				atlas_set_scheduler(task_rq(tsk), tsk,
-						    SCHED_ATLAS);
+			atlas_set_scheduler(task_rq(tsk), tsk, SCHED_ATLAS);
 		}
 	}
 
@@ -1169,9 +1164,8 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		/* the task needs to be blocked to simulate no
 		 * CPU time in CFS
 		 */
-		if (atlas_job->tsk->policy != SCHED_ATLAS)
-			atlas_set_scheduler(rq, atlas_job->tsk, SCHED_ATLAS);
 		start_slack_timer(atlas_rq, atlas_job, slack);
+		atlas_set_scheduler(rq, atlas_job->tsk, SCHED_ATLAS);
 	}
 
 	goto out_notask;
@@ -1187,10 +1181,7 @@ out_task:
 
 	if ((job->tsk != prev) || prev->policy != SCHED_ATLAS) {
 		update_stats_curr_start(rq, se);
-		WARN_ON(sysctl_sched_atlas_advance_in_cfs &&
-			job->tsk->policy == SCHED_ATLAS);
-		if (job->tsk->policy != SCHED_ATLAS)
-			atlas_set_scheduler(rq, job->tsk, SCHED_ATLAS);
+		atlas_set_scheduler(rq, job->tsk, SCHED_ATLAS);
 	} else if (se->job != job) {
 		/* Account properly, if the same task runs, but with a
 		 * different job
@@ -1211,8 +1202,7 @@ out_notask:
 	/* make sure all CFS tasks are runnable */
 	for (job = pick_first_job(&atlas_rq->cfs_jobs); job;
 	     job = pick_next_job(job)) {
-		if (job->tsk->policy != SCHED_NORMAL)
-			atlas_set_scheduler(rq, job->tsk, SCHED_NORMAL);
+		atlas_set_scheduler(rq, job->tsk, SCHED_NORMAL);
 	}
 	/* no task because of:
 	 * - no jobs -> inc happens on submission of new job
@@ -1380,11 +1370,9 @@ void exit_atlas(struct task_struct *p)
 
 	raw_spin_unlock(&atlas_rq->lock);
 
-	if (p->policy == SCHED_ATLAS) {
-		printk(KERN_EMERG "Switching task %s/%d back to CFS", p->comm,
-		       task_tid(p));
-		atlas_set_scheduler(task_rq(p), p, SCHED_NORMAL);
-	}
+	printk_deferred(KERN_EMERG "Switching task %s/%d back to CFS", p->comm,
+			task_tid(p));
+	atlas_set_scheduler(task_rq(p), p, SCHED_NORMAL);
 
 	for (; !list_empty(&p->atlas.jobs);)
 		destroy_first_job(p);
@@ -1597,7 +1585,7 @@ SYSCALL_DEFINE0(atlas_next)
 	 * encounter no jobs present and an infinite scheduling loop would be
 	 * the result.
 	 */
-	if (!next_job && current->policy != SCHED_NORMAL)
+	if (!next_job)
 		atlas_set_scheduler(rq, current, SCHED_NORMAL);
 
 	if (next_job)
@@ -1647,13 +1635,12 @@ out_timer:
 		     "Returning with " JOB_FMT " Job timer set to %lldms",
 		     JOB_ARG(next_job), ktime_to_ms(next_job->deadline));
 
-	if (next_job->root == NULL && current->policy != SCHED_NORMAL) {
+	if (is_cfs_job(next_job)) {
 		/* Staying in ATLAS or Recover could mean to never run again (if
 		 * there is no job in the future)
 		 */
 		atlas_set_scheduler(rq, current, SCHED_NORMAL);
-	} else if (!job_missed_deadline(next_job, ktime_get()) &&
-		   current->policy != SCHED_ATLAS) {
+	} else if (!job_missed_deadline(next_job, ktime_get())) {
 		/* Avoid running in CFS while another task is in slacktime. */
 		atlas_set_scheduler(rq, current, SCHED_ATLAS);
 	}
