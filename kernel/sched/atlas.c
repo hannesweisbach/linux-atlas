@@ -540,6 +540,8 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 				atlas_debug_(TIMER, "End of SLACK for " JOB_FMT,
 					     JOB_ARG(job));
 			}
+
+			atlas_rq->slack_task = NULL;
 			inc_nr_running(&atlas_rq->atlas_jobs);
 		} break;
 		default:
@@ -1020,8 +1022,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 	BUG_ON(atlas_rq->slack_task);
 
-	atlas_rq->slack_task = NULL;
-
 	atlas_job = select_job(&atlas_rq->atlas_jobs);
 	recover_job = select_job(&atlas_rq->recover_jobs);
 
@@ -1236,12 +1236,8 @@ void exit_atlas(struct task_struct *p)
 	hrtimer_cancel(&p->atlas.timer);
 
 	raw_spin_lock(&atlas_rq->lock);
-
-	if (p == atlas_rq->slack_task) {
+	if (p == atlas_rq->slack_task)
 		stop_timer(atlas_rq);
-		atlas_rq->slack_task = NULL;
-	}
-
 	raw_spin_unlock(&atlas_rq->lock);
 
 	printk_deferred(KERN_EMERG "Switching task %s/%d back to CFS", p->comm,
