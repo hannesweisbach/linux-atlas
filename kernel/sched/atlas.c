@@ -1070,10 +1070,10 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		/* the task needs to be blocked to simulate no
 		 * CPU time in CFS
 		 */
-		start_slack_timer(atlas_rq, atlas_job, slack);
 		atlas_set_scheduler(rq, atlas_job->tsk, SCHED_ATLAS);
 	}
 
+	start_slack_timer(atlas_rq, atlas_job, slack);
 	goto out_notask;
 
 out_task:
