@@ -315,6 +315,43 @@ static void rebuild_timeline(struct atlas_job *curr)
 	}
 }
 
+static inline bool is_collision(const struct atlas_job *const a,
+				const struct atlas_job *const b)
+{
+	return ktime_compare(a->sdeadline, job_start(b)) > 0;
+}
+
+static inline bool resolve_collision(struct atlas_job *a, struct atlas_job *b)
+{
+	if (is_collision(a, b)) {
+		a->sdeadline = job_start(b);
+		return true;
+	}
+	return false;
+}
+
+static void __rebuild_timeline(struct atlas_job *job)
+{
+	/* Move from the next task backwards to adjust scheduled
+	 * deadlines and execution times.
+	 */
+
+	struct atlas_job *curr = pick_next_job(job);
+	struct atlas_job *prev = NULL;
+
+	/* If the new job has the latest deadline, adjust from this job
+	 * backwards in time.
+	 */
+	if (!curr)
+		curr = job;
+
+	for (prev = pick_prev_job(curr); prev;
+	     curr = prev, prev = pick_prev_job(prev)) {
+		if (!resolve_collision(prev, curr))
+			break;
+	}
+}
+
 /* general removal of jobs -> timeline needs to be rebuilt */
 static void remove_job_from_tree(struct atlas_job *const job)
 {
@@ -1284,16 +1321,9 @@ static int select_task_rq_atlas(struct task_struct *p, int prev_cpu,
 }
 #endif /* CONFIG_SMP */
 
- 
 /*
  * Methods to maintain job tree.
  */
-
-static inline int is_collision(struct atlas_job *a, struct atlas_job *b)
-{
-	/* b starts before a finishes. */
-	return ktime_compare(a->sdeadline, job_start(b)) > 0;
-}
 
 static void check_admission_plan(struct atlas_rq *atlas_rq) {
 #ifdef DEBUG
@@ -1317,14 +1347,6 @@ static void check_admission_plan(struct atlas_rq *atlas_rq) {
 		prev = next;
 	}
 #endif
-}
-
-/*
- * resolve_collision assumes that there is a collision
- */
-static inline void resolve_collision(struct atlas_job *a,
-		struct atlas_job *b) {
-	a->sdeadline = job_start(b);
 }
 
 static void destroy_first_job(struct task_struct *tsk);
@@ -1464,8 +1486,6 @@ static void schedule_job(struct atlas_job *const job)
 		unsigned long flags;
 		struct rq *rq = task_rq_lock(job->tsk, &flags);
 		struct atlas_rq *atlas_rq = &rq->atlas;
-		struct atlas_job *curr = NULL;
-		struct atlas_job *prev = NULL;
 		raw_spin_lock(&atlas_rq->lock);
 
 		/* Wakeup when in ATLAS-SLACK time. */
@@ -1473,24 +1493,7 @@ static void schedule_job(struct atlas_job *const job)
 
 		insert_job_into_tree(&atlas_rq->atlas_jobs, job);
 
-		/* Move from the next task backwards to adjust scheduled
-		 * deadlines and execution times.
-		 */
-		curr = pick_next_job(job);
-
-		/* If the new job has the latest deadline, adjust from this job
-		 * backwards in time.
-		 */
-		if (!curr)
-			curr = job;
-
-		for (prev = pick_prev_job(curr); prev;
-		     curr = prev, prev = pick_prev_job(prev)) {
-			if (is_collision(prev, curr))
-				resolve_collision(prev, curr);
-			else
-				break;
-		}
+		__rebuild_timeline(job);
 
 		/* If there is no job before the new job in the RQ, timers need
 		 * to be adjusted or a reschedule is necessary.  The update
