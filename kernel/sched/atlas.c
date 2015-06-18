@@ -74,6 +74,11 @@ static inline bool not_runnable(struct atlas_job_tree *tree)
 	return tree->nr_running == 0;
 }
 
+static inline bool has_jobs(struct atlas_job_tree *tree)
+{
+	return tree->leftmost_job != NULL;
+}
+
 static inline bool has_no_jobs(struct atlas_job_tree *tree)
 {
 	return tree->leftmost_job == NULL;
@@ -890,7 +895,8 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
     
 	se->on_rq = 1;
 
-	if ((flags & ENQUEUE_WAKEUP) && not_runnable(&atlas_rq->atlas_jobs)) {
+	if ((flags & ENQUEUE_WAKEUP) && has_jobs(&atlas_rq->atlas_jobs) &&
+	    not_runnable(&atlas_rq->atlas_jobs)) {
 		inc_nr_running(&atlas_rq->atlas_jobs);
 	}
 	{
