@@ -25,15 +25,6 @@ const struct sched_class atlas_sched_class;
 unsigned int sysctl_sched_atlas_min_slack      = 1000000ULL;
 unsigned int sysctl_sched_atlas_advance_in_cfs = 0;
 
-#define MIGRATE_ON 0
-
-enum update_exec_time {
-	UPDATE_EXEC_TIME,
-	NO_UPDATE_EXEC_TIME,
-};
-
-static void check_admission_plan(struct atlas_rq *atlas_rq);
-
 void sched_log(const char *fmt, ...)
 {
 	va_list args;
@@ -505,10 +496,6 @@ static inline void stop_timer(struct atlas_rq *atlas_rq)
 {
 	assert_raw_spin_locked(&atlas_rq->lock);
 
-	// BUG_ON(atlas_rq->advance_in_cfs && atlas_rq->timer_target !=
-	// ATLAS_SLACK && !(atlas_rq->pending_work &
-	// PENDING_STOP_CFS_ADVANCED));
-
 	switch (atlas_rq->timer_target) {
 	case ATLAS_NONE:
 		break;
@@ -521,9 +508,6 @@ static inline void stop_timer(struct atlas_rq *atlas_rq)
 	default:
 		BUG();
 	}
-
-	// BUG_ON(atlas_rq->advance_in_cfs && !(atlas_rq->pending_work &
-	// PENDING_STOP_CFS_ADVANCED));
 }
 
 static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
@@ -573,11 +557,6 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 
 	return HRTIMER_NORESTART;
 }
-
-
-/*
- * switching between the schedulers
- */
 
 static const char *sched_name(int policy)
 {
@@ -668,78 +647,6 @@ static void atlas_set_scheduler(struct rq *rq, struct task_struct *p,
 	p->sched_class->switched_to(rq, p);
 }
 
-void atlas_cfs_blocked(struct rq *rq, struct task_struct *p)
-{
-	struct atlas_rq *atlas_rq = &rq->atlas;
-
-	if (!sysctl_sched_atlas_advance_in_cfs)
-		return;
-
-	assert_raw_spin_locked(&rq->lock);
-
-	BUG_ON(p->sched_class != &fair_sched_class);
-	BUG_ON(p->policy != SCHED_NORMAL);
-	BUG_ON(p->on_rq);
-	BUG_ON(atlas_rq->slack_task == NULL);
-	BUG_ON(atlas_rq->timer_target != ATLAS_SLACK);
-
-	raw_spin_lock(&atlas_rq->lock);
-	stop_slack_timer(atlas_rq);
-	raw_spin_unlock(&atlas_rq->lock);
-
-	atlas_set_scheduler(rq, p, SCHED_ATLAS);
-}
-
-#ifdef ATLAS_DEBUG
-
-static void debug_task(struct task_struct *p) {
-	unsigned counter = 0;
-	struct atlas_job *job;
-	struct sched_atlas_entity *se = &p->atlas;
-	const char *s;
-	
-	printk_deferred("SCHED_ATLAS: DEBUG task pid=%d\n", p->pid);
-	switch (p->atlas.state) {
-	case ATLAS_BLOCKED:
-		s = "ATLAS_BLOCKED";
-		break;
-	case ATLAS_UNDEF:
-		s = "ATLAS_UNDEF";
-		break;
-	case ATLAS_RUNNING:
-		s = "ATLAS_RUNNING";
-		break;
-	default:
-		s = "UNKNOWN";
-	}
-	
-	printk_deferred("State: %s\n", s);
-	printk_deferred("Submissions:\n");
-	spin_lock(&p->atlas.jobs_lock);
-	printk_deferred("se->job=%p\n", p->atlas.job);
-	list_for_each_entry(job, &se->jobs, list) {
-		counter++;
-		debug_job(job);
-	}
-	printk_deferred("    count: %d\n", counter);
-	printk_deferred("======================\n");
-	spin_unlock(&p->atlas.jobs_lock);
-}
-#endif /* ATLAS_DEBUG */
-
-/*
- * call with se->jobs_lock hold!
- */
-void erase_task_job(struct atlas_job *s) {
-	if (unlikely(!s))
-		return;
-	list_del(&s->list);
-}
-
-/*******************************************************
- * Scheduler stuff
- */
-
 static void init_tree(struct atlas_job_tree *tree, struct atlas_rq *atlas_rq,
 		      const char *name)
 {
@@ -802,31 +709,6 @@ static inline void update_stats_curr_start(struct rq *rq,
 	atlas_task_of(se)->se.exec_start = rq_clock_task(rq);
 }
 
-static void update_execution_time(struct atlas_rq *atlas_rq,
-				  struct atlas_job *job, ktime_t delta_exec)
-{
-	assert_raw_spin_locked(&atlas_rq->lock);
-
-	/* sexectime <= exectime; if exectime is less than, sexectime is also
-	 * less than.
-	 */
-	if (unlikely(ktime_compare(job->exectime, delta_exec) < 0)) {
-		job->exectime = ktime_set(0, 0);
-		job->sexectime = ktime_set(0, 0);
-		goto out;
-	} else {
-		job->exectime = ktime_sub(job->exectime, delta_exec);
-		if (ktime_compare(job->sexectime, delta_exec) < 0) {
-			job->sexectime = ktime_set(0, 0);
-		} else {
-			job->sexectime = ktime_sub(job->sexectime, delta_exec);
-		}
-	}
-
-out:
-	check_admission_plan(atlas_rq);
-}
-
 static void update_curr_atlas(struct rq *rq)
 {
 	struct atlas_rq *atlas_rq = &rq->atlas;
@@ -834,6 +716,8 @@ static void update_curr_atlas(struct rq *rq)
 	struct sched_entity *se = &atlas_task_of(atlas_se)->se;
 	u64 now = rq_clock_task(rq);
 	u64 delta_exec;
+
+	assert_raw_spin_locked(&rq->lock);
 
 	if (unlikely(!atlas_se))
 		return;
@@ -843,7 +727,7 @@ static void update_curr_atlas(struct rq *rq)
 		delta_exec = 0;
 
 	se->exec_start = now;
-	//atlas_se->start = ktime_get();
+	// atlas_se->start = ktime_get();
 
 	schedstat_set(se->statistics.exec_max,
 		      max(delta_exec, se->statistics.exec_max));
@@ -858,12 +742,9 @@ static void update_curr_atlas(struct rq *rq)
 	}
 
 	{
-		//ktime_t prev_start, diff_ktime;
-		//prev_start = atlas_se->start;
-		//update_stats_curr_start(atlas_rq, atlas_se);
-		//diff_ktime = ktime_sub(atlas_se->start, prev_start);
 		unsigned long flags;
 		struct atlas_job *job = atlas_se->job;
+		const ktime_t delta = ns_to_ktime(delta_exec);
 
 		if (unlikely(!job))
 			return;
@@ -873,11 +754,45 @@ static void update_curr_atlas(struct rq *rq)
 				    "Accounting %lldus to " JOB_FMT,
 				    delta_exec / 1000, JOB_ARG(job));
 
-		assert_raw_spin_locked(&rq->lock);
 		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-		update_execution_time(atlas_rq, job, ns_to_ktime(delta_exec));
+
+		/* sexectime <= exectime; if exectime is less than, sexectime
+		 * is also less than.
+		 */
+		if (unlikely(ktime_compare(job->exectime, delta) < 0)) {
+			job->exectime = ktime_set(0, 0);
+			job->sexectime = ktime_set(0, 0);
+		} else {
+			job->exectime = ktime_sub(job->exectime, delta);
+			if (ktime_compare(job->sexectime, delta) < 0) {
+				job->sexectime = ktime_set(0, 0);
+			} else {
+				job->sexectime = ktime_sub(job->sexectime,
+							   delta);
+			}
+		}
 		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 	}
+#ifdef DEBUG
+	{
+		unsigned long flags;
+		struct atlas_job *job;
+		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+
+		for (job = pick_first_job(&atlas_rq->atlas_jobs); job;
+		     job = pick_next_job(job)) {
+			struct atlas_job *next = pick_next_job(job);
+			if (next == NULL)
+				break;
+			if (is_collision(job, next)) {
+				WARN(1, "Collision between jobs " JOB_FMT
+					" and " JOB_FMT,
+				     JOB_ARG(job), JOB_ARG(next));
+			}
+		}
+		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+	}
+#endif
 }
 
 /*
@@ -949,17 +864,18 @@ static void dequeue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 	atlas_debug(DEQUEUE, "Task %s/%d%s (%d/%d)", p->comm, task_tid(p),
 		    (flags & DEQUEUE_SLEEP) ? " (sleep)" : "", rq->nr_running,
 		    atlas_rq->atlas_jobs.nr_running);
+#if 0
 	if (atlas_rq->timer_target == ATLAS_NONE && !atlas_rq->nr_runnable) {
 		struct atlas_job *job =
 				pick_first_job(&atlas_rq->atlas_jobs);
 		if (job)
 			start_slack_timer(atlas_rq, job, slacktime(job));
 	}
+#endif
 }
 
 static void yield_task_atlas(struct rq *rq)
 {
-    return;
 }
 
 static void check_preempt_curr_atlas(struct rq *rq, struct task_struct *p,
@@ -1041,6 +957,28 @@ static struct atlas_job *select_job(struct atlas_job_tree *tree)
 	return job;
 }
 
+void atlas_cfs_blocked(struct rq *rq, struct task_struct *p)
+{
+	struct atlas_rq *atlas_rq = &rq->atlas;
+
+	if (!sysctl_sched_atlas_advance_in_cfs)
+		return;
+
+	assert_raw_spin_locked(&rq->lock);
+
+	BUG_ON(p->sched_class != &fair_sched_class);
+	BUG_ON(p->policy != SCHED_NORMAL);
+	BUG_ON(p->on_rq);
+	BUG_ON(atlas_rq->slack_task == NULL);
+	BUG_ON(atlas_rq->timer_target != ATLAS_SLACK);
+
+	raw_spin_lock(&atlas_rq->lock);
+	stop_slack_timer(atlas_rq);
+	raw_spin_unlock(&atlas_rq->lock);
+
+	atlas_set_scheduler(rq, p, SCHED_ATLAS);
+}
+
 static struct task_struct *pick_next_task_atlas(struct rq *rq,
 						struct task_struct *prev)
 {
@@ -1083,8 +1021,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	BUG_ON(atlas_rq->slack_task);
 
 	atlas_rq->slack_task = NULL;
-
-	debug_rq(rq);
 
 	atlas_job = select_job(&atlas_rq->atlas_jobs);
 	recover_job = select_job(&atlas_rq->recover_jobs);
@@ -1207,11 +1143,6 @@ static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 	atlas_rq->curr = NULL;
 }
 
-/*
- * called when a thread moved to ATLAS
- * it is rescheduled because of switch_to,
- * all timer stuff handled in put_prev_task
- */
 static void set_curr_task_atlas(struct rq *rq)
 {
 	struct task_struct *p = rq->curr;
@@ -1234,37 +1165,28 @@ static void set_curr_task_atlas(struct rq *rq)
 
 static void task_tick_atlas(struct rq *rq, struct task_struct *p, int queued)
 {
-	//revolution
-    //update_curr_atlas(rq);
-    return;
-}
-
-static void prio_changed_atlas(struct rq *rq, struct task_struct *p, int oldprio)
-{
-    //printk(KERN_INFO "SCHED_ATLAS: prio_changed\n");
-    return;
+	// revolution
+	// update_curr_atlas(rq);
+	return;
 }
 
 static void switched_from_atlas(struct rq *rq, struct task_struct *p)
 {
-    //printk(KERN_INFO "SCHED_ATLAS: switched_from\n");
-    return;
 }
 
 static void switched_to_atlas(struct rq *rq, struct task_struct *p)
 {
-    atlas_debug(SWITCHED_TO, "pid=%d on_rq=%d", p->pid, p->atlas.on_rq);
-	
-	if (!p->atlas.on_rq)
+	if (!task_on_rq_queued(p))
 		return;
 
-	if (rq->curr == p)
-		resched_curr(rq);
-	else
-		check_preempt_curr(rq, p, 0);
+	resched_curr(rq);
+}
 
-	return;
-}   
+static void prio_changed_atlas(struct rq *rq, struct task_struct *p,
+			       int oldprio)
+{
+	// printk(KERN_INFO "SCHED_ATLAS: prio_changed\n");
+}
 
 static unsigned int get_rr_interval_atlas(struct rq *rq, struct task_struct *task)
 {
@@ -1276,38 +1198,20 @@ static unsigned int get_rr_interval_atlas(struct rq *rq, struct task_struct *tas
 static int select_task_rq_atlas(struct task_struct *p, int prev_cpu,
 				int sd_flag, int flags)
 {
-    return task_cpu(p);
-    
-}
-#endif /* CONFIG_SMP */
-
-/*
- * Methods to maintain job tree.
- */
-
-static void check_admission_plan(struct atlas_rq *atlas_rq) {
-#ifdef DEBUG
-	struct atlas_job *prev, *next;
-	
-	assert_raw_spin_locked(&atlas_rq->lock);
-	//__debug_jobs(atlas_rq);
-
-	prev = pick_first_job(&atlas_rq->atlas_jobs);
-
-	if (!prev)
-		return;
-
-	while ((next = pick_next_job(prev))) {
-		if (is_collision(prev, next)) {
-			WARN(1,
-			     "Collision between jobs " JOB_FMT " and " JOB_FMT,
-			     JOB_ARG(prev), JOB_ARG(next));
-			BUG();
-		}
-		prev = next;
-	}
+	atlas_debug(PARTITION, "CPU for Task %s/%d", p->comm, task_tid(p));
+#if 0
+	return task_cpu(p);
+#else
+	return task_cpu(p) + 1 % num_possible_cpus();
 #endif
 }
+
+static void task_waking_atlas(struct task_struct *p)
+{
+	atlas_debug(PARTITION, "Waking up task %d", p->pid);
+}
+
+#endif /* CONFIG_SMP */
 
 static void destroy_first_job(struct task_struct *tsk);
 
@@ -1353,7 +1257,6 @@ void exit_atlas(struct task_struct *p)
 	       task_tid(p), sched_name(p->policy), rq->nr_running,
 	       atlas_rq->atlas_jobs.nr_running,
 	       atlas_rq->recover_jobs.nr_running);
-
 }
 
 const struct sched_class atlas_sched_class = {
@@ -1396,7 +1299,6 @@ const struct sched_class atlas_sched_class = {
 	.update_curr        = update_curr_atlas,
 };
 
-
 /*
  * called when a process missed its deadline; called from irq context
  */
@@ -1433,7 +1335,6 @@ static void schedule_job(struct atlas_job *const job)
 		wakeup = list_empty(&se->jobs) && (se->state == ATLAS_BLOCKED);
 		/* in submission order. */
 		list_add_tail(&job->list, &se->jobs);
-
 		spin_unlock_irqrestore(&se->jobs_lock, flags);
 
 		if (wakeup)
@@ -1523,12 +1424,7 @@ SYSCALL_DEFINE0(atlas_next)
 	struct sched_atlas_entity *se = &current->atlas;
 	struct atlas_job *next_job = NULL;
 
-	hrtimer_cancel(&se->timer);	
-	//reset rq timer
-	//FIXME:
-
-
-	sched_log("NEXT pid=%d", current->pid);
+	hrtimer_cancel(&se->timer);
 
 	raw_spin_lock(&atlas_rq->lock);
 	stop_timer(atlas_rq);
@@ -1543,10 +1439,7 @@ SYSCALL_DEFINE0(atlas_next)
 		destroy_first_job(current);
 
 	/*
-	 * This is not correct. use first_entry_or_null to choose whether to
-	 * return or block, but job->se should point to the job to which the
-	 * runtime is currently accounted. Thus, se->job has to be set by
-	 * pick_next_task.
+	 * TODO: Not sure if this is ok, or should be done under se->jobs_lock.
 	 */
 	next_job = list_first_entry_or_null(&se->jobs, struct atlas_job, list);
 
@@ -1673,13 +1566,6 @@ SYSCALL_DEFINE4(atlas_submit, pid_t, pid, uint64_t, id, struct timeval __user *,
 		goto err;
 
 	schedule_job(job);
-
-	{
-		unsigned long flags;
-		struct rq *rq = task_rq_lock(job->tsk, &flags);
-		debug_rq(rq);
-		task_rq_unlock(rq, job->tsk, &flags);
-	}
 
 	rcu_read_unlock();
 	return 0;
