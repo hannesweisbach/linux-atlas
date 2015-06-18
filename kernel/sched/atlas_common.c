@@ -94,14 +94,16 @@ size_t print_timeline(const struct atlas_job_tree *tree, char *buf,
 {
 	size_t offset = 0;
 	const struct atlas_job *job;
-	struct rq *rq = task_rq(current);
+	struct rq *rq = tree->rq;
 
-	offset += scnprintf(&buf[offset], size - offset,
-			    "%s (%d/%d/%d/%d) (%d):\n", tree->name,
-			    rq->nr_running, rq->atlas.atlas_jobs.nr_running,
-			    rq->atlas.recover_jobs.nr_running,
-			    rq->atlas.cfs_jobs.nr_running,
-			    rq_nr_jobs(&tree->jobs));
+	offset += scnprintf(
+			&buf[offset], size - offset,
+			"%s %d (%d/%d/%d/%d) (%d)%s:\n", tree->name, cpu_of(rq),
+			rq->nr_running, rq->atlas.atlas_jobs.nr_running,
+			rq->atlas.recover_jobs.nr_running,
+			rq->atlas.cfs_jobs.nr_running, rq_nr_jobs(&tree->jobs),
+			(rq->atlas.timer_target == ATLAS_SLACK) ? " (slack)"
+								: "");
 
 	for (job = pick_first_job(tree); job; job = pick_next_job(job)) {
 		offset += print_atlas_job(job, &buf[offset], size - offset);
