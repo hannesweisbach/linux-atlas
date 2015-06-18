@@ -668,58 +668,27 @@ static void atlas_set_scheduler(struct rq *rq, struct task_struct *p,
 	p->sched_class->switched_to(rq, p);
 }
 
-static void advance_thread_in_cfs(struct atlas_rq *atlas_rq) {
-	struct sched_atlas_entity *se;
-	struct task_struct *p;
-
-	BUG_ON(atlas_rq->slack_task != NULL);
-
-	if (not_runnable(&atlas_rq->atlas_jobs)) {
-		sched_log("advance: no thread ready");
-		stop_slack_timer(atlas_rq);
-		return;
-	}
-
-	se = atlas_rq->curr;
-
-	/*
-	 * se can be the blocked entity in cfs (put_prev_task not called yet)
-	 * -> select the first entity from rb-tree
-	 */
-	if (!se || !task_of(se)->on_rq)
-		se = pick_first_entity(atlas_rq);
-	
-	BUG_ON(!se);
-	
-	p = atlas_task_of(se);
-	BUG_ON(!p->on_rq);
-	
-	BUG_ON(atlas_rq->timer_target != ATLAS_SLACK);
-	atlas_rq->slack_task = p;
-	
-	sched_log("advance: next thread p=%d", p->pid);
-	atlas_set_scheduler(rq_of(atlas_rq), p, SCHED_NORMAL);
-}
-
-void atlas_cfs_blocked(struct rq *rq, struct task_struct *p) {
+void atlas_cfs_blocked(struct rq *rq, struct task_struct *p)
+{
 	struct atlas_rq *atlas_rq = &rq->atlas;
 
 	if (!sysctl_sched_atlas_advance_in_cfs)
 		return;
 
 	assert_raw_spin_locked(&rq->lock);
-	sched_log("advance_in_cfs: blocked");
+
 	BUG_ON(p->sched_class != &fair_sched_class);
+	BUG_ON(p->policy != SCHED_NORMAL);
 	BUG_ON(p->on_rq);
+	BUG_ON(atlas_rq->slack_task == NULL);
+	BUG_ON(atlas_rq->timer_target != ATLAS_SLACK);
+
+	raw_spin_lock(&atlas_rq->lock);
+	stop_slack_timer(atlas_rq);
+	raw_spin_unlock(&atlas_rq->lock);
 
 	atlas_set_scheduler(rq, p, SCHED_ATLAS);
-	atlas_rq->slack_task = NULL;
-
-	/* move the next ready task to cfs */
-	if (in_slacktime(atlas_rq))
-		advance_thread_in_cfs(atlas_rq);
 }
-
 
 #ifdef ATLAS_DEBUG
 
@@ -1113,6 +1082,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 	BUG_ON(atlas_rq->slack_task);
 
+	atlas_rq->slack_task = NULL;
 
 	debug_rq(rq);
 
