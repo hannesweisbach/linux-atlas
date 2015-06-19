@@ -1384,26 +1384,21 @@ static void destroy_first_job(struct task_struct *tsk)
 		spin_unlock_irqrestore(jobs_lock, flags);
 	}
 	if (job_in_rq(job)) {
-		struct rq *rq = task_rq(tsk);
-		struct atlas_rq *atlas_rq = &rq->atlas;
 		unsigned long flags;
-
-		atlas_debug_(SYS_NEXT, "Removing " JOB_FMT " from %s",
-			     JOB_ARG(job), job_rq_name(job));
-
-		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+		raw_spinlock_t *atlas_lock = &job->tree->rq->atlas.lock;
 
 		if (is_cfs_job(job) && tsk->policy != SCHED_NORMAL) {
 			/* CFS job finished in ATLAS -> put it back into CFS. */
 			WARN(1, "CFS job finished in ATLAS");
-			raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
-			atlas_set_scheduler(rq, tsk, SCHED_NORMAL);
-			raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+			atlas_set_scheduler(task_rq(tsk), tsk, SCHED_NORMAL);
 		}
 
-		remove_job_from_tree(job);
+		atlas_debug_(SYS_NEXT, "Removing " JOB_FMT " from %s",
+			     JOB_ARG(job), job_rq_name(job));
 
-		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+		raw_spin_lock_irqsave(atlas_lock, flags);
+		remove_job_from_tree(job);
+		raw_spin_unlock_irqrestore(atlas_lock, flags);
 	}
 
 	job_dealloc(job);
