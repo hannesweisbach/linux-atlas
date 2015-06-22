@@ -108,10 +108,10 @@ extern void sched_log(const char *fmt, ...);
 #define atlas_debug(flag, fmt, ...)                                            \
 	do {                                                                   \
 		if (is_flag_enabled(flag)) {                                   \
-			printk_deferred(KERN_DEBUG "CPU %d [" #flag            \
+			printk_deferred(KERN_DEBUG "CPU %d/%d [" #flag         \
 						   "](%d): " fmt "\n",         \
-					smp_processor_id(), __LINE__,          \
-					##__VA_ARGS__);                        \
+					smp_processor_id(), task_tid(current), \
+					__LINE__, ##__VA_ARGS__);              \
 		}                                                              \
 	} while (0)
 
