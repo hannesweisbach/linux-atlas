@@ -1317,31 +1317,27 @@ enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer)
 
 static void schedule_job(struct atlas_job *const job)
 {
+	unsigned long flags;
+	struct rq *rq = task_rq_lock(job->tsk, &flags);
+	struct atlas_rq *atlas_rq = &rq->atlas;
+	struct sched_atlas_entity *se = &job->tsk->atlas;
+	bool wakeup;
+
 	atlas_debug_(SYS_SUBMIT, JOB_FMT, JOB_ARG(job));
 
-	{
-		unsigned long flags;
-		struct sched_atlas_entity *se = &job->tsk->atlas;
-		int wakeup;
+	raw_spin_lock(&atlas_rq->lock);
 
-		spin_lock_irqsave(&se->jobs_lock, flags);
+	{
+		spin_lock(&se->jobs_lock);
 
 		/* TODO: se->state is not protected by any lock */
 		wakeup = list_empty(&se->jobs) && (se->state == ATLAS_BLOCKED);
 		/* in submission order. */
 		list_add_tail(&job->list, &se->jobs);
-		spin_unlock_irqrestore(&se->jobs_lock, flags);
-
-		if (wakeup)
-			wake_up_process(job->tsk);
+		spin_unlock(&se->jobs_lock);
 	}
 
 	{
-		unsigned long flags;
-		struct rq *rq = task_rq_lock(job->tsk, &flags);
-		struct atlas_rq *atlas_rq = &rq->atlas;
-		raw_spin_lock(&atlas_rq->lock);
-
 		/* Wakeup when in ATLAS-SLACK time. */
 		stop_timer(atlas_rq);
 
@@ -1358,9 +1354,14 @@ static void schedule_job(struct atlas_job *const job)
 		/* TODO: If task is in Recover/CFS but new job's deadline has
 		 * not passed, move the task to ATLAS
 		 */
-		raw_spin_unlock(&atlas_rq->lock);
-		task_rq_unlock(rq, job->tsk, &flags);
 	}
+
+	raw_spin_unlock(&atlas_rq->lock);
+	task_rq_unlock(rq, job->tsk, &flags);
+
+	/* task ->pi_lock; outside of task_rq_lock()/unlock() */
+	if (wakeup)
+		wake_up_process(job->tsk);
 }
 
 static void destroy_first_job(struct task_struct *tsk)
