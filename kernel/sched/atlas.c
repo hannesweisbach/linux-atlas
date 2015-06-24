@@ -175,6 +175,7 @@ job_alloc(const uint64_t id, const ktime_t exectime, const ktime_t deadline)
 	set_job_times(job, exectime, deadline);
 	job->id = id;
 	job->tsk = NULL;
+	job->tree = NULL;
 
 out:
 	return job;
