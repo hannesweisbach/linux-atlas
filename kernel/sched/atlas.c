@@ -48,16 +48,22 @@ void sched_log(const char *fmt, ...)
 
 static inline void inc_nr_running(struct atlas_job_tree *tree)
 {
-	if (tree != &tree->rq->atlas.cfs_jobs)
+	if (tree != &tree->rq->atlas.cfs_jobs && tree->nr_running == 0) {
 		add_nr_running(tree->rq, 1);
-	tree->nr_running += 1;
+		tree->nr_running = 1;
+	} else if (tree == &tree->rq->atlas.cfs_jobs) {
+		tree->nr_running += 1;
+	}
 }
 
 static inline void dec_nr_running(struct atlas_job_tree *tree)
 {
-	if (tree != &tree->rq->atlas.cfs_jobs)
+	if (tree != &tree->rq->atlas.cfs_jobs && tree->nr_running == 1) {
 		sub_nr_running(tree->rq, 1);
-	tree->nr_running -= 1;
+		tree->nr_running = 0;
+	} else if (tree == &tree->rq->atlas.cfs_jobs) {
+		tree->nr_running -= 1;
+	}
 }
 
 static inline bool not_runnable(struct atlas_job_tree *tree)
@@ -812,25 +818,11 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
     
 	se->on_rq = 1;
 
-	if ((flags & ENQUEUE_WAKEUP) && has_jobs(&atlas_rq->atlas_jobs) &&
-	    not_runnable(&atlas_rq->atlas_jobs)) {
-		inc_nr_running(&atlas_rq->atlas_jobs);
-	}
-	{
-		struct atlas_job *pos;
-		if ((flags & ENQUEUE_WAKEUP) &&
-		    not_runnable(&atlas_rq->recover_jobs)) {
-			list_for_each_entry(pos, &se->jobs, list)
-			{
-				atlas_debug(ENQUEUE, JOB_FMT, JOB_ARG(pos));
-				if (is_recover_job(pos)) {
-					atlas_debug(ENQUEUE,
-						    "Waking up Recover, too");
-					inc_nr_running(&atlas_rq->recover_jobs);
-					break;
-				}
-			}
-		}
+	if (flags & ENQUEUE_WAKEUP) {
+		if (has_jobs(&atlas_rq->atlas_jobs))
+			inc_nr_running(&atlas_rq->atlas_jobs);
+		if (has_jobs(&atlas_rq->recover_jobs))
+			inc_nr_running(&atlas_rq->recover_jobs);
 	}
 
 	atlas_debug(ENQUEUE, JOB_FMT "%s%s (%d/%d)", JOB_ARG(se->job),
@@ -863,14 +855,6 @@ static void dequeue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 	atlas_debug(DEQUEUE, "Task %s/%d%s (%d/%d)", p->comm, task_tid(p),
 		    (flags & DEQUEUE_SLEEP) ? " (sleep)" : "", rq->nr_running,
 		    atlas_rq->atlas_jobs.nr_running);
-#if 0
-	if (atlas_rq->timer_target == ATLAS_NONE && !atlas_rq->nr_runnable) {
-		struct atlas_job *job =
-				pick_first_job(&atlas_rq->atlas_jobs);
-		if (job)
-			start_slack_timer(atlas_rq, job, slacktime(job));
-	}
-#endif
 }
 
 static void yield_task_atlas(struct rq *rq)
@@ -934,8 +918,6 @@ static struct atlas_job *select_job(struct atlas_job_tree *tree)
 
 	if (not_runnable(tree))
 		return job;
-
-	BUG_ON(has_no_jobs(tree));
 
 	for (job = pick_first_job(tree); job && !task_on_rq_queued(job->tsk);
 	     job = pick_next_job(job)) {
@@ -1027,10 +1009,10 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	atlas_debug(PICK_NEXT_TASK, "Prev: " JOB_FMT, JOB_ARG(prev->atlas.job));
 	atlas_debug(PICK_NEXT_TASK, "Next: " JOB_FMT, JOB_ARG(atlas_job));
 
-	if ((atlas_job == NULL) && !not_runnable(&atlas_rq->atlas_jobs))
+	if (atlas_job == NULL)
 		dec_nr_running(&atlas_rq->atlas_jobs);
 
-	if ((recover_job == NULL) && !not_runnable(&atlas_rq->recover_jobs))
+	if (recover_job == NULL)
 		dec_nr_running(&atlas_rq->recover_jobs);
 
 	if (atlas_job == NULL && recover_job == NULL)
