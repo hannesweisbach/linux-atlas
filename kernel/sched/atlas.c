@@ -1559,7 +1559,8 @@ out_timer:
 		 * there is no job in the future)
 		 */
 		atlas_set_scheduler(rq, current, SCHED_NORMAL);
-	} else if (!job_missed_deadline(next_job, ktime_get())) {
+	} else if (!job_missed_deadline(next_job, ktime_get()) &&
+		   !in_slacktime(atlas_rq)) {
 		/* Avoid running in CFS while another task is in slacktime. */
 		atlas_set_scheduler(rq, current, SCHED_ATLAS);
 	}
