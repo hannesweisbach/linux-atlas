@@ -77,12 +77,13 @@ size_t print_atlas_job(const struct atlas_job const *job, char *buf,
 		       size_t size)
 {
 	if (job != NULL) {
-		s64 start = ktime_to_ms(
-				ktime_sub(job->sdeadline, job->sexectime));
-		return scnprintf(buf, size, "Job %5llu %8lld - %8lld (%4lld) "
-					    "%s/%5d %s\n",
-				 job->id, start, ktime_to_ms(job->sdeadline),
-				 ktime_to_ms(job->sexectime), job->tsk->comm,
+		return scnprintf(buf, size,
+				 "Job %5llu %8lld - %8lld (%4lld/%4lld) "
+				 "%s/%5d %s\n",
+				 job->id, ktime_to_ms(job_start(job)),
+				 ktime_to_ms(job->sdeadline),
+				 ktime_to_ms(job->sexectime),
+				 ktime_to_ms(job->rexectime), job->tsk->comm,
 				 task_tid(job->tsk),
 				 !task_on_rq_queued(job->tsk) ? "blocked" : "");
 	}

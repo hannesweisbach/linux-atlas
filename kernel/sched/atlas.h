@@ -15,6 +15,7 @@ struct atlas_job {
 	ktime_t deadline; //absolut
 	ktime_t sdeadline;
 	ktime_t sexectime;
+	ktime_t rexectime;
 	uint64_t id;
 };
 
