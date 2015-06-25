@@ -1355,10 +1355,10 @@ static void destroy_first_job(struct task_struct *tsk)
 
 	BUG_ON(!job);
 
-	atlas_debug_(SYS_NEXT, "Finished " JOB_FMT " at "
-			       "%lld under %s (%s)",
-		     JOB_ARG(job), ktime_to_ms(ktime_get()),
-		     sched_name(current->policy), job_rq_name(job));
+	atlas_debug(SYS_NEXT, "Finished " JOB_FMT " at "
+			      "%lld under %s (%s)",
+		    JOB_ARG(job), ktime_to_ms(ktime_get()),
+		    sched_name(current->policy), job_rq_name(job));
 
 	{
 		unsigned long flags;
@@ -1377,8 +1377,8 @@ static void destroy_first_job(struct task_struct *tsk)
 			atlas_set_scheduler(task_rq(tsk), tsk, SCHED_NORMAL);
 		}
 
-		atlas_debug_(SYS_NEXT, "Removing " JOB_FMT " from %s",
-			     JOB_ARG(job), job_rq_name(job));
+		atlas_debug(SYS_NEXT, "Removing " JOB_FMT " from %s",
+			    JOB_ARG(job), job_rq_name(job));
 
 		raw_spin_lock_irqsave(atlas_lock, flags);
 		remove_job_from_tree(job);
