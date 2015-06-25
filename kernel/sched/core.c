@@ -2160,6 +2160,10 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->atlas.nr_atlas_jobs = 0;
 	p->atlas.new_jobs = 0;
 	spin_lock_init(&p->atlas.jobs_lock);
+
+	p->atlas.last_cpu = -1;
+	p->atlas.last_mask = CPU_MASK_NONE;
+
 	hrtimer_init(&p->atlas.timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_PINNED);
 	p->atlas.timer.function = &atlas_timer_task_function;
 #endif

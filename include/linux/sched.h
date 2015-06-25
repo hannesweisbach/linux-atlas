@@ -1285,6 +1285,9 @@ struct sched_atlas_entity {
 	struct list_head jobs;
 	spinlock_t jobs_lock;
 
+	cpumask_t last_mask;
+	int last_cpu;
+
 	struct hrtimer timer;
 };
 #endif

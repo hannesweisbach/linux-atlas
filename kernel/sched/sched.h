@@ -952,11 +952,21 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
 	p->rt.rt_rq  = tg->rt_rq[cpu];
 	p->rt.parent = tg->rt_se[cpu];
 #endif
+
+#if defined(CONFIG_ATLAS) && defined(ATLAS_MIGRATE_IN_CFS)
+	set_task_rq_atlas(p, cpu);
+#endif
 }
 
 #else /* CONFIG_CGROUP_SCHED */
 
-static inline void set_task_rq(struct task_struct *p, unsigned int cpu) { }
+static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
+{
+#if defined(CONFIG_ATLAS) && defined(ATLAS_MIGRATE_IN_CFS)
+	set_task_rq_atlas(p, cpu);
+#endif
+}
+
 static inline struct task_group *task_group(struct task_struct *p)
 {
 	return NULL;

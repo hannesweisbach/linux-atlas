@@ -196,6 +196,8 @@ extern struct task_group root_task_group;
 		.nr_atlas_jobs = 0,                                            \
 		.new_jobs = 0,                                                 \
 		.jobs_lock = __SPIN_LOCK_UNLOCKED(tsk.atlas.jobs_lock),        \
+		.last_mask = CPU_MASK_NONE,                                    \
+		.nr_atlas_jobs = 0,                                            \
 	},
 #else
 #define INIT_ATLAS(tsk)
