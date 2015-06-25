@@ -1274,6 +1274,8 @@ struct sched_entity {
 };
 
 #ifdef CONFIG_ATLAS
+enum atlas_classes { ATLAS = 0, RECOVER = 1, CFS = 2, NR_CLASSES };
+
 struct sched_atlas_entity {
 	struct list_head list;   /*for initialization*/
 	unsigned int state;
@@ -1284,6 +1286,8 @@ struct sched_atlas_entity {
 	struct atlas_job *job;
 	struct list_head jobs;
 	spinlock_t jobs_lock;
+
+	int nr_jobs[NR_CLASSES];
 
 	cpumask_t last_mask;
 	int last_cpu;

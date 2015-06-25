@@ -2157,9 +2157,11 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->atlas.on_rq = 0;
 	p->atlas.job = NULL;
 	INIT_LIST_HEAD(&p->atlas.jobs);
-	p->atlas.nr_atlas_jobs = 0;
-	p->atlas.new_jobs = 0;
 	spin_lock_init(&p->atlas.jobs_lock);
+
+	p->atlas.nr_jobs[ATLAS] = 0;
+	p->atlas.nr_jobs[RECOVER] = 0;
+	p->atlas.nr_jobs[CFS] = 0;
 
 	p->atlas.last_cpu = -1;
 	p->atlas.last_mask = CPU_MASK_NONE;

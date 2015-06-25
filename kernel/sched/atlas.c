@@ -250,7 +250,9 @@ static void insert_job_into_tree(struct atlas_job_tree *tree,
 	struct rb_node **link = &tree->jobs.rb_node;
 	struct rb_node *parent = NULL;
 	int leftmost = 1;
+	const ptrdiff_t class = tree->rq->atlas.jobs - tree;
 
+	BUG_ON(class >= NR_CLASSES);
 	WARN_ON(!RB_EMPTY_NODE(&job->rb_node));
 
 	if (tree->leftmost_job == NULL) { /* tree is empty */
@@ -274,6 +276,7 @@ static void insert_job_into_tree(struct atlas_job_tree *tree,
 	rb_link_node(&job->rb_node, parent, link);
 	rb_insert_color(&job->rb_node, &tree->jobs);
 	job->tree = tree;
+	++job->tsk->atlas.nr_jobs[class];
 
 	if (leftmost)
 		tree->leftmost_job = &job->rb_node;
@@ -306,6 +309,9 @@ static void insert_job_into_tree(struct atlas_job_tree *tree,
 static void remove_depleted_job_from_tree(struct atlas_job_tree *tree)
 {
 	struct atlas_job *to_delete;
+	const ptrdiff_t class = tree->rq->atlas.jobs - tree;
+
+	BUG_ON(class >= NR_CLASSES);
 	BUG_ON(tree == NULL);
 	BUG_ON(tree->leftmost_job == NULL);
 	assert_raw_spin_locked(&tree->rq->atlas.lock);
@@ -316,6 +322,7 @@ static void remove_depleted_job_from_tree(struct atlas_job_tree *tree)
 		atlas_debug(RBTREE, "Removed last job from %s.", tree->name);
 		dec_nr_running(tree);
 	}
+	--to_delete->tsk->atlas.nr_jobs[class];
 
 	rb_erase(&to_delete->rb_node, &tree->jobs);
 	RB_CLEAR_NODE(&to_delete->rb_node);
@@ -354,8 +361,10 @@ static void rebuild_timeline(struct atlas_job *curr)
 static void remove_job_from_tree(struct atlas_job *const job)
 {
 	struct atlas_job *curr;
+	const ptrdiff_t class = job->tree->rq->atlas.jobs - job->tree;
 	bool atlas_job;
 
+	BUG_ON(class >= NR_CLASSES);
 	BUG_ON(job == NULL);
 	BUG_ON(job->tree == NULL);
 	BUG_ON(!job_in_rq(job));
@@ -396,6 +405,7 @@ static void remove_job_from_tree(struct atlas_job *const job)
 	rb_erase(&job->rb_node, &job->tree->jobs);
 	RB_CLEAR_NODE(&job->rb_node);
 	job->tree = NULL;
+	--job->tsk->atlas.nr_jobs[class];
 
 	if (atlas_job && curr != NULL)
 		rebuild_timeline(curr);
