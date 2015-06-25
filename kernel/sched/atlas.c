@@ -1390,8 +1390,6 @@ static void schedule_job(struct atlas_job *const job)
 
 	atlas_debug_(SYS_SUBMIT, JOB_FMT, JOB_ARG(job));
 
-	switched_from_atlas(rq, job->tsk);
-
 	raw_spin_lock(&atlas_rq->lock);
 
 	{
@@ -1422,6 +1420,9 @@ static void schedule_job(struct atlas_job *const job)
 		 * not passed, move the task to ATLAS
 		 */
 	}
+
+	if (job->tsk->policy == SCHED_NORMAL /* && previously no jobs */)
+		switched_from_atlas(rq, job->tsk);
 
 	raw_spin_unlock(&atlas_rq->lock);
 	task_rq_unlock(rq, job->tsk, &flags);
