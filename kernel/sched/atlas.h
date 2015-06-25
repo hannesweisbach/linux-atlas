@@ -33,10 +33,10 @@ struct atlas_job_tree {
 	char name[8];
 };
 
+enum atlas_classes { ATLAS = 0, RECOVER = 1, CFS = 2, NR_CLASSES };
+
 struct atlas_rq {
-	struct atlas_job_tree atlas_jobs;
-	struct atlas_job_tree recover_jobs;
-	struct atlas_job_tree cfs_jobs;
+	struct atlas_job_tree jobs[NR_CLASSES];
 	struct sched_atlas_entity *curr;
 	raw_spinlock_t lock;
 	struct hrtimer timer; //used for slack time and for time to cfs
