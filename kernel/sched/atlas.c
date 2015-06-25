@@ -1196,7 +1196,7 @@ static void switched_from_atlas(struct rq *rq, struct task_struct *p)
 	p->atlas.last_cpu = task_cpu(p);
 #ifndef ATLAS_MIGRATE_IN_CFS
 	p->atlas.last_mask = p->cpus_allowed;
-	if (p->policy == SCHED_NORMAL) {
+	if (!list_empty(&p->atlas.jobs)) {
 		cpumask_t mask;
 		cpumask_clear(&mask);
 		cpumask_set_cpu(smp_processor_id(), &mask);
