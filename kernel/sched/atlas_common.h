@@ -88,6 +88,16 @@ static inline pid_t task_tid(struct task_struct *tsk)
 
 extern void sched_log(const char *fmt, ...);
 
+#define RQ_FMT "%d (%d %u/%lu %d/%d/%d %d)%s"
+#define RQ_ARG(rq)                                                             \
+	cpu_of(rq), rq->nr_running, rq->rt.rt_nr_running,                      \
+			rq->dl.dl_nr_running,                                  \
+			rq->atlas.jobs[ATLAS].nr_running,                      \
+			rq->atlas.jobs[RECOVER].nr_running,                    \
+			rq->atlas.jobs[CFS].nr_running, rq->cfs.nr_running,    \
+			(rq->atlas.timer_target == ATLAS_SLACK) ? " (slack)"   \
+								: ""
+
 #define JOB_FMT "Job %s/%d/%lld (e: %lld/%lld/%lld, d: %lld/%lld, %s)"
 #define JOB_ARG(job)                                                           \
 	(job) ? (job)->tsk->comm : "(none)", (job) ? task_tid(job->tsk) : 0,   \

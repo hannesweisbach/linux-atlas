@@ -994,10 +994,9 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 			goto out_notask;
 	}
 
-	atlas_debug(PICK_NEXT_TASK, "Task %s/%d running in %s (%d/%d/%d)",
+	atlas_debug(PICK_NEXT_TASK, "Task %s/%d running in %s " RQ_FMT,
 		    prev->comm, task_tid(prev), sched_name(prev->policy),
-		    rq->nr_running, atlas_rq->jobs[ATLAS].nr_running,
-		    rq->atlas.jobs[RECOVER].nr_running);
+		    RQ_ARG(rq));
 
 	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 
