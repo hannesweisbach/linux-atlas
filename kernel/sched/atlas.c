@@ -10,6 +10,7 @@
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
+#include <linux/cpumask.h>
 
 #include "sched.h"
 #include "atlas.h"
@@ -19,6 +20,8 @@
 #ifdef CONFIG_ATLAS_TRACE
 #include <trace/events/atlas.h>
 #endif
+
+#define cpumask_fmt "%*pb[l]"
 
 const struct sched_class atlas_sched_class;
 
@@ -600,6 +603,11 @@ static void atlas_set_scheduler(struct rq *rq, struct task_struct *p,
 	if (p->policy == policy)
 		return;
 
+#ifndef ATLAS_MIGRATE_IN_CFS
+	if (task_cpu(p) != rq->cpu)
+		set_task_cpu(p, rq->cpu);
+#endif
+
 	/* may grab non-irq protected spin_locks */
 	BUG_ON(in_interrupt());
 	assert_raw_spin_locked(&rq->lock);
@@ -1150,16 +1158,57 @@ static void task_tick_atlas(struct rq *rq, struct task_struct *p, int queued)
 	return;
 }
 
+static void move_all_jobs(struct task_struct *p, struct atlas_rq *to)
+{
+	struct atlas_job *job;
+
+	assert_raw_spin_locked(&to->lock);
+
+	spin_lock(&p->atlas.jobs_lock);
+	list_for_each_entry(job, &p->atlas.jobs, list)
+	{
+		struct atlas_job_tree *dst;
+		if (is_atlas_job(job))
+			dst = &to->atlas_jobs;
+		else if (is_recover_job(job))
+			dst = &to->recover_jobs;
+		else
+			dst = &to->cfs_jobs;
+		assert_raw_spin_locked(&job->tree->rq->atlas.lock);
+		remove_job_from_tree(job);
+		insert_job_into_tree(dst, job);
+		atlas_debug(PARTITION, "to " JOB_FMT, JOB_ARG(job));
+	}
+	spin_unlock(&p->atlas.jobs_lock);
+}
+
 static void switched_from_atlas(struct rq *rq, struct task_struct *p)
 {
+#ifdef CONFIG_SMP
+	p->atlas.last_cpu = task_cpu(p);
+#ifndef ATLAS_MIGRATE_IN_CFS
+	p->atlas.last_mask = p->cpus_allowed;
+	if (p->policy == SCHED_NORMAL) {
+		cpumask_t mask;
+		cpumask_clear(&mask);
+		cpumask_set_cpu(smp_processor_id(), &mask);
+		do_set_cpus_allowed(p, &mask);
+		atlas_debug(PARTITION,
+			    "Setting allowed CPUs for %s/%d to %d %*pb[l]",
+			    p->comm, task_tid(p), smp_processor_id(),
+			    cpumask_pr_args(&mask));
+	}
+#endif
+#endif
 }
 
 static void switched_to_atlas(struct rq *rq, struct task_struct *p)
 {
-	if (!task_on_rq_queued(p))
-		return;
-
-	resched_curr(rq);
+#ifdef CONFIG_SMP
+#ifndef ATLAS_MIGRATE_IN_CFS
+	do_set_cpus_allowed(p, &p->atlas.last_mask);
+#endif
+#endif
 }
 
 static void prio_changed_atlas(struct rq *rq, struct task_struct *p,
@@ -1184,6 +1233,45 @@ static int select_task_rq_atlas(struct task_struct *p, int prev_cpu,
 #else
 	return task_cpu(p) + 1 % num_possible_cpus();
 #endif
+}
+
+static void migrate_task_rq_atlas(struct task_struct *p, int next_cpu)
+{
+	int prev_cpu = task_cpu(p);
+	struct atlas_rq *prev_rq = &cpu_rq(prev_cpu)->atlas;
+	struct atlas_rq *next_rq = &cpu_rq(next_cpu)->atlas;
+
+	preempt_disable();
+#if 0
+	atlas_debug(PARTITION, "Migrate %s/%d from CPU %d to CPU %d", p->comm,
+		    task_tid(p), prev_cpu, next_cpu);
+#endif
+	double_raw_lock(&prev_rq->lock, &next_rq->lock);
+
+	stop_timer(prev_rq);
+
+	/* up the count, if the RQ is blocked */
+	if (has_jobs(&prev_rq->jobs[ATLAS]))
+		inc_nr_running(&prev_rq->jobs[ATLAS]);
+
+	if (has_jobs(&prev_rq->jobs[RECOVER]))
+		inc_nr_running(&prev_rq->jobs[RECOVER]);
+
+	if (not_runnable(&prev_rq->jobs[CFS]) && has_jobs(&prev_rq->jobs[CFS]))
+		inc_nr_running(&prev_rq->jobs[CFS]);
+
+	move_all_jobs(p, next_rq);
+
+	raw_spin_unlock(&prev_rq->lock);
+	raw_spin_unlock(&next_rq->lock);
+
+	preempt_enable();
+}
+
+void set_task_rq_atlas(struct task_struct *p, int next_cpu)
+{
+	if (task_cpu(p) != next_cpu)
+		migrate_task_rq_atlas(p, next_cpu);
 }
 
 static void task_waking_atlas(struct task_struct *p)
@@ -1251,7 +1339,7 @@ const struct sched_class atlas_sched_class = {
 
 #ifdef CONFIG_SMP
 	.select_task_rq     = select_task_rq_atlas,
-	//.migrate_task_rq    = migrate_task_rq_atlas,
+	.migrate_task_rq    = migrate_task_rq_atlas,
 
 	//.post_schedule      = post_schedule_atlas,
 	//.task_waking        = task_waking_atlas,
@@ -1307,6 +1395,8 @@ static void schedule_job(struct atlas_job *const job)
 	bool wakeup;
 
 	atlas_debug_(SYS_SUBMIT, JOB_FMT, JOB_ARG(job));
+
+	switched_from_atlas(rq, job->tsk);
 
 	raw_spin_lock(&atlas_rq->lock);
 
