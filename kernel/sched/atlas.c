@@ -1059,7 +1059,25 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	}
 
 	start_slack_timer(atlas_rq, atlas_job, slack);
-	goto out_notask;
+
+out_notask:
+	/* make sure all CFS tasks are runnable */
+	for (job = pick_first_job(&atlas_rq->jobs[CFS]); job;
+	     job = pick_next_job(job)) {
+		atlas_set_scheduler(rq, job->tsk, SCHED_NORMAL);
+	}
+	/* no task because of:
+	 * - no jobs -> inc happens on submission of new job
+	 * - slack timer -> inc happens on timeout.
+	 * - all runnable tasks are blocked
+	 *   (dequeue with sleeping called later)
+	 *   (enqueue with waking called later)
+	 */
+	atlas_rq->curr = NULL;
+	atlas_debug(PICK_NEXT_TASK, "No ATLAS job ready. (%d/%d/%d)",
+		    rq->nr_running, atlas_rq->jobs[ATLAS].nr_running,
+		    atlas_rq->jobs[RECOVER].nr_running);
+	return NULL;
 
 out_task:
 	se = &job->tsk->atlas;
@@ -1089,24 +1107,6 @@ out_task:
 
 	return atlas_task_of(atlas_rq->curr);
 
-out_notask:
-	/* make sure all CFS tasks are runnable */
-	for (job = pick_first_job(&atlas_rq->jobs[CFS]); job;
-	     job = pick_next_job(job)) {
-		atlas_set_scheduler(rq, job->tsk, SCHED_NORMAL);
-	}
-	/* no task because of:
-	 * - no jobs -> inc happens on submission of new job
-	 * - slack timer -> inc happens on timeout.
-	 * - all runnable tasks are blocked
-	 *   (dequeue with sleeping called later)
-	 *   (enqueue with waking called later)
-	 */
-	atlas_rq->curr = NULL;
-	atlas_debug(PICK_NEXT_TASK, "No ATLAS job ready. (%d/%d/%d)",
-		    rq->nr_running, atlas_rq->jobs[ATLAS].nr_running,
-		    atlas_rq->jobs[RECOVER].nr_running);
-	return NULL;
 }
 
 static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
