@@ -136,12 +136,18 @@ static inline ktime_t ktime_min(ktime_t a, ktime_t b)
 
 static inline bool has_execution_time_left(const struct atlas_job const *job)
 {
-	return ktime_compare(job->sexectime, ktime_set(0, 0)) > 0;
+	return ktime_compare(job->rexectime, job->sexectime) < 0;
 }
 
 static inline bool job_missed_deadline(struct atlas_job *s, ktime_t now)
 {
 	return ktime_compare(s->sdeadline, now) <= 0;
+}
+
+static inline ktime_t
+remaining_execution_time(const struct atlas_job const *job)
+{
+	return ktime_sub(job->sexectime, job->rexectime);
 }
 
 static inline struct rq *rq_of(struct atlas_rq *atlas_rq)
@@ -158,10 +164,11 @@ static void set_job_times(struct atlas_job *job, const ktime_t exectime,
 	 * Assign execution times of 0, to ensure they are moved to
 	 * CFS, not Recover.
 	 */
+	job->exectime = exectime;
 	if (ktime_compare(deadline, ktime_get()) < 0) {
-		job->exectime = job->sexectime = ktime_set(0, 0);
+		job->sexectime = ktime_set(0, 0);
 	} else {
-		job->exectime = job->sexectime = exectime;
+		job->sexectime = job->exectime;
 	}
 }
 
@@ -176,6 +183,7 @@ job_alloc(const uint64_t id, const ktime_t exectime, const ktime_t deadline)
 	INIT_LIST_HEAD(&job->list);
 	RB_CLEAR_NODE(&job->rb_node);
 	set_job_times(job, exectime, deadline);
+	job->rexectime = ktime_set(0, 0);
 	job->id = id;
 	job->tsk = NULL;
 	job->tree = NULL;
@@ -335,23 +343,13 @@ static void rebuild_timeline(struct atlas_job *curr)
 	struct atlas_job *prev = pick_prev_job(curr);
 	/* TODO: extend execution time of curr */
 	for (; prev; curr = prev, prev = pick_prev_job(curr)) {
-		ktime_t new_deadline;
-		ktime_t gap;
-		ktime_t extended;
-
 		if (ktime_equal(prev->deadline, prev->sdeadline))
 			break;
 
 		atlas_debug(SYS_NEXT, "Extending execution "
 				      "time of " JOB_FMT,
 			    JOB_ARG(prev));
-		new_deadline = ktime_min(prev->deadline, job_start(curr));
-		gap = ktime_sub(new_deadline, prev->sdeadline);
-		prev->sdeadline = new_deadline;
-		extended = ktime_add(gap, prev->sexectime);
-
-		/* don't extend beyond the reservation */
-		prev->sexectime = ktime_min(prev->exectime, extended);
+		prev->sdeadline = ktime_min(prev->deadline, job_start(curr));
 
 		atlas_debug(SYS_NEXT, "Extended " JOB_FMT, JOB_ARG(prev));
 	}
@@ -432,8 +430,9 @@ ktime_t slacktime(struct atlas_job *job)
 	ktime_t exec_sum = ktime_set(0, 0);
 	struct atlas_job *j = pick_prev_job(job);
 
-	for (; j; j = pick_prev_job(j))
-		exec_sum = ktime_add(exec_sum, j->sexectime);
+	for (; j; j = pick_prev_job(j)) {
+		exec_sum = ktime_add(exec_sum, remaining_execution_time(j));
+	}
 
 	return ktime_sub(slack, exec_sum);
 }
@@ -457,7 +456,8 @@ static inline void start_slack_timer(struct atlas_rq *atlas_rq,
 static inline void start_job_timer(struct atlas_rq *atlas_rq,
 				   struct atlas_job *job)
 {
-	ktime_t timeout = ktime_add(ktime_get(), job->sexectime);
+	const ktime_t remaining = remaining_execution_time(job);
+	ktime_t timeout = ktime_add(ktime_get(), remaining);
 
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 	atlas_rq->timer_target = ATLAS_JOB;
@@ -467,8 +467,7 @@ static inline void start_job_timer(struct atlas_rq *atlas_rq,
 		timeout = job->sdeadline;
 
 	atlas_debug(TIMER, "Setup job timer for " JOB_FMT " to %lld (+%lld)",
-		    JOB_ARG(job), ktime_to_ms(timeout),
-		    ktime_to_ms(job->sexectime));
+		    JOB_ARG(job), ktime_to_ms(timeout), ktime_to_ms(remaining));
 
 	__setup_rq_timer(atlas_rq, timeout);
 }
@@ -780,21 +779,7 @@ static void update_curr_atlas(struct rq *rq)
 
 		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 
-		/* sexectime <= exectime; if exectime is less than, sexectime
-		 * is also less than.
-		 */
-		if (unlikely(ktime_compare(job->exectime, delta) < 0)) {
-			job->exectime = ktime_set(0, 0);
-			job->sexectime = ktime_set(0, 0);
-		} else {
-			job->exectime = ktime_sub(job->exectime, delta);
-			if (ktime_compare(job->sexectime, delta) < 0) {
-				job->sexectime = ktime_set(0, 0);
-			} else {
-				job->sexectime = ktime_sub(job->sexectime,
-							   delta);
-			}
-		}
+		job->rexectime = ktime_add(job->rexectime, delta);
 		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 	}
 #ifdef DEBUG
@@ -912,7 +897,8 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 			    JOB_ARG(job), ktime_to_ns(now));
 		BUG_ON(!is_atlas_job(job));
 		remove_depleted_job_from_tree(jobs);
-		if (ktime_compare(job->sexectime, ktime_set(0, 30000)) > 0) {
+		if (ktime_compare(remaining_execution_time(job),
+				  ktime_set(0, 30000)) > 0) {
 			insert_job_into_tree(jobs + RECOVER, job);
 		} else {
 			insert_job_into_tree(jobs + CFS, job);
@@ -1052,7 +1038,8 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	}
 
 	if (recover_job) {
-		if (ktime_compare(slack, recover_job->sexectime) < 0) {
+		if (ktime_compare(slack,
+				  remaining_execution_time(recover_job)) < 0) {
 			/* maybe this is not such a good idea. use the
 			 * job timer with reduced timeout instead? */
 			start_slack_timer(atlas_rq, atlas_job, slack);

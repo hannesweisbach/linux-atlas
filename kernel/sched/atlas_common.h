@@ -55,7 +55,8 @@ static inline struct atlas_job *pick_next_job(const struct atlas_job const *job)
 
 static inline ktime_t job_start(const struct atlas_job const *s)
 {
-	return ktime_sub(s->sdeadline, s->sexectime);
+	const ktime_t exectime = ktime_sub(s->sexectime, s->rexectime);
+	return ktime_sub(s->deadline, exectime);
 }
 
 static inline int job_before(const struct atlas_job *const lhs,
@@ -87,10 +88,11 @@ static inline pid_t task_tid(struct task_struct *tsk)
 
 extern void sched_log(const char *fmt, ...);
 
-#define JOB_FMT "Job %s/%d/%lld (e: %lld/%lld, d: %lld/%lld, %s)"
+#define JOB_FMT "Job %s/%d/%lld (e: %lld/%lld/%lld, d: %lld/%lld, %s)"
 #define JOB_ARG(job)                                                           \
 	(job) ? (job)->tsk->comm : "(none)", (job) ? task_tid(job->tsk) : 0,   \
 			(job) ? job->id : -1,                                  \
+			(job) ? ktime_to_ms((job)->rexectime) : -1,            \
 			(job) ? ktime_to_ms((job)->sexectime) : -1,            \
 			(job) ? ktime_to_ms((job)->exectime) : -1,             \
 			(job) ? ktime_to_ms((job)->sdeadline) : -1,            \
