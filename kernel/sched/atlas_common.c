@@ -117,16 +117,14 @@ size_t print_timeline(const struct atlas_job_tree *tree, char *buf,
 size_t print_rq(const struct rq *const rq, char *buf, size_t size)
 {
 	size_t offset = 0;
+	int class;
 	const struct atlas_rq *const atlas = &rq->atlas;
 
-	offset += print_timeline(&atlas->atlas_jobs, &buf[offset],
-				 size - offset);
-	if (atlas->recover_jobs.leftmost_job != NULL)
-		offset += print_timeline(&atlas->recover_jobs, &buf[offset],
-					 size - offset);
-	if (atlas->cfs_jobs.leftmost_job != NULL)
-		offset += print_timeline(&atlas->cfs_jobs, &buf[offset],
-					 size - offset);
+	for (class = ATLAS; class < NR_CLASSES; ++class) {
+		if (class == ATLAS || atlas->jobs[class].leftmost_job != NULL)
+			offset += print_timeline(&atlas->jobs[class],
+						 &buf[offset], size - offset);
+	}
 
 	return offset;
 }
