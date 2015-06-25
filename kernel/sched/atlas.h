@@ -46,4 +46,8 @@ struct atlas_rq {
 	int skip_update_curr;
 };
 
+//#define ATLAS_MIGRATE_IN_CFS
+
+void set_task_rq_atlas(struct task_struct *p, int next_cpu);
+
 #endif /* _SCHED_ATLAS_INTERNAL_H */
