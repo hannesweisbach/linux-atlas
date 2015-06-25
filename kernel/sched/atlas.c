@@ -1740,6 +1740,12 @@ SYSCALL_DEFINE2(atlas_remove, pid_t, pid, uint64_t, id)
 		ret = -EINVAL;
 	}
 
+	if (list_empty(&tsk->atlas.jobs) && tsk->policy == SCHED_ATLAS) {
+		struct rq *rq = task_rq_lock(tsk, &flags);
+		atlas_set_scheduler(rq, tsk, SCHED_NORMAL);
+		task_rq_unlock(rq, tsk, &flags);
+	}
+
 out:
 	rcu_read_unlock();
 	return ret;
