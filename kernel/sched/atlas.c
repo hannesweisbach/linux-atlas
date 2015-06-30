@@ -1288,6 +1288,7 @@ void exit_atlas(struct task_struct *p)
 	unsigned long flags;
 	struct rq *const rq = task_rq_lock(p, &flags);
 	struct atlas_rq *const atlas_rq = &rq->atlas;
+	const bool atlas_task = !list_empty(&p->atlas.jobs);
 
 	BUG_ON(in_interrupt());
 	BUG_ON(p->policy == SCHED_ATLAS &&
@@ -1302,8 +1303,10 @@ void exit_atlas(struct task_struct *p)
 		stop_timer(atlas_rq);
 	raw_spin_unlock(&atlas_rq->lock);
 
-	printk_deferred(KERN_EMERG "Switching task %s/%d back to CFS", p->comm,
-			task_tid(p));
+	if (atlas_task)
+		printk_deferred(KERN_EMERG "Switching task %s/%d back to CFS",
+				p->comm, task_tid(p));
+
 	atlas_set_scheduler(task_rq(p), p, SCHED_NORMAL);
 
 	for (; !list_empty(&p->atlas.jobs);)
@@ -1311,10 +1314,13 @@ void exit_atlas(struct task_struct *p)
 
 	task_rq_unlock(rq, p, &flags);
 
-	printk(KERN_EMERG "Task %s/%d in %s is exiting (%d/%d/%d)\n", p->comm,
-	       task_tid(p), sched_name(p->policy), rq->nr_running,
-	       atlas_rq->jobs[ATLAS].nr_running,
-	       atlas_rq->jobs[RECOVER].nr_running);
+	if (atlas_task) {
+		debug_rq();
+		printk(KERN_EMERG "Task %s/%d in %s is exiting (%d/%d/%d)\n",
+		       p->comm, task_tid(p), sched_name(p->policy),
+		       rq->nr_running, atlas_rq->jobs[ATLAS].nr_running,
+		       atlas_rq->jobs[RECOVER].nr_running);
+	}
 }
 
 // clang-format off
