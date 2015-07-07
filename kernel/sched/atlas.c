@@ -243,13 +243,10 @@ static inline bool is_collision(const struct atlas_job *const a,
 	return ktime_compare(a->sdeadline, job_start(b)) > 0;
 }
 
-static inline bool resolve_collision(struct atlas_job *a, struct atlas_job *b)
+static inline void resolve_collision(struct atlas_job *a, struct atlas_job *b)
 {
-	if (is_collision(a, b)) {
+	if (is_collision(a, b))
 		a->sdeadline = job_start(b);
-		return true;
-	}
-	return false;
 }
 
 static void insert_job_into_tree(struct atlas_job_tree *tree,
@@ -304,8 +301,7 @@ static void insert_job_into_tree(struct atlas_job_tree *tree,
 
 		for (prev = pick_prev_job(curr); prev;
 		     curr = prev, prev = pick_prev_job(prev)) {
-			if (!resolve_collision(prev, curr))
-				break;
+			resolve_collision(prev, curr);
 		}
 	}
 }
