@@ -366,8 +366,8 @@ static void remove_job_from_tree(struct atlas_job *const job)
 
 	{
 		struct atlas_rq *atlas_rq = &job->tree->rq->atlas;
-		if (atlas_rq->curr && atlas_rq->curr->job == job)
-			atlas_rq->curr->job = NULL;
+		if (atlas_rq->curr == job)
+			atlas_rq->curr = NULL;
 	}
 
 	/* To rebuild the timeline, pick the job that is scheduled after
@@ -497,10 +497,8 @@ static void stop_job_timer(struct atlas_rq *atlas_rq)
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 
 	{
-		struct atlas_job *job =
-				atlas_rq->curr ? atlas_rq->curr->job : NULL;
 		atlas_debug(TIMER, "Job timer stopped for " JOB_FMT,
-			    JOB_ARG(job));
+			    JOB_ARG(atlas_rq->curr));
 	}
 }
 
@@ -538,20 +536,12 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 	switch (atlas_rq->timer_target) {
 		case ATLAS_JOB:
 			atlas_debug_(TIMER, "Deadline for " JOB_FMT,
-				     JOB_ARG(atlas_rq->curr->job));
+				     JOB_ARG(atlas_rq->curr));
 			BUG_ON(rq->curr->sched_class != &atlas_sched_class);
 			break;
 		case ATLAS_SLACK: {
-			struct atlas_job *job =
-					pick_first_job(&atlas_rq->jobs[ATLAS]);
-
-			if (!job) {
-				atlas_debug_(TIMER,
-					     "End of SLACK with no job; ");
-			} else {
-				atlas_debug_(TIMER, "End of SLACK for " JOB_FMT,
-					     JOB_ARG(job));
-			}
+			atlas_debug_(TIMER, "End of SLACK for " JOB_FMT,
+				     JOB_ARG(atlas_rq->curr));
 
 			atlas_rq->slack_task = NULL;
 			inc_nr_running(&atlas_rq->jobs[ATLAS]);
@@ -731,15 +721,17 @@ static inline void update_stats_curr_start(struct rq *rq,
 static void update_curr_atlas(struct rq *rq)
 {
 	struct atlas_rq *atlas_rq = &rq->atlas;
-	struct sched_atlas_entity *atlas_se = atlas_rq->curr;
-	struct sched_entity *se = &atlas_task_of(atlas_se)->se;
+	struct atlas_job *curr = atlas_rq->curr;
+	struct sched_entity *se;
 	u64 now = rq_clock_task(rq);
 	u64 delta_exec;
 
 	assert_raw_spin_locked(&rq->lock);
 
-	if (unlikely(!atlas_se))
+	if (unlikely(curr == NULL))
 		return;
+
+	se = &curr->tsk->se;
 
 	delta_exec = now - se->exec_start;
 	if (unlikely((s64)delta_exec < 0))
@@ -754,7 +746,7 @@ static void update_curr_atlas(struct rq *rq)
 	se->sum_exec_runtime += delta_exec;
 
 	{
-		struct task_struct *tsk = atlas_task_of(atlas_se);
+		struct task_struct *tsk = curr->tsk;
 		// trace_sched_stat_runtime(curr, delta_exec,
 		cpuacct_charge(tsk, delta_exec);
 		account_group_exec_runtime(tsk, delta_exec);
@@ -762,20 +754,15 @@ static void update_curr_atlas(struct rq *rq)
 
 	{
 		unsigned long flags;
-		struct atlas_job *job = atlas_se->job;
 		const ktime_t delta = ns_to_ktime(delta_exec);
-
-		if (unlikely(!job))
-			return;
 
 		if (delta_exec > 1000 * 10)
 			atlas_debug(ADAPT_SEXEC,
 				    "Accounting %lldus to " JOB_FMT,
-				    delta_exec / 1000, JOB_ARG(job));
+				    delta_exec / 1000, JOB_ARG(curr));
 
 		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
-
-		job->rexectime = ktime_add(job->rexectime, delta);
+		curr->rexectime = ktime_add(curr->rexectime, delta);
 		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 	}
 #ifdef DEBUG
@@ -812,10 +799,9 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 
 	update_curr_atlas(rq);
 
-	if (atlas_rq->curr != se) {
+	if (atlas_rq->curr && atlas_rq->curr->tsk != p)
 		update_stats_wait_start(rq, &p->se);
-	}
-    
+
 	se->on_rq = 1;
 
 	if (flags & ENQUEUE_WAKEUP) {
@@ -825,7 +811,7 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 			inc_nr_running(&atlas_rq->jobs[RECOVER]);
 	}
 
-	atlas_debug(ENQUEUE, JOB_FMT "%s%s (%d/%d)", JOB_ARG(se->job),
+	atlas_debug(ENQUEUE, JOB_FMT "%s%s (%d/%d)", JOB_ARG(atlas_rq->curr),
 		    (flags & ENQUEUE_WAKEUP) ? " (Wakeup)" : "",
 		    (flags & ENQUEUE_WAKING) ? " (Waking)" : "", rq->nr_running,
 		    atlas_rq->jobs[ATLAS].nr_running);
@@ -844,11 +830,10 @@ static void dequeue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 
 	update_curr_atlas(rq);
 
-	if (atlas_rq->curr == se) {
+	if (atlas_rq->curr && atlas_rq->curr->tsk == p)
 		atlas_rq->curr = NULL;
-	} else {
+	else
 		update_stats_wait_end(rq, &p->se);
-	}
 
 	se->on_rq = 0;
 
@@ -1087,7 +1072,7 @@ out_task:
 	if ((job->tsk != prev) || prev->policy != SCHED_ATLAS) {
 		update_stats_curr_start(rq, se);
 		atlas_set_scheduler(rq, job->tsk, SCHED_ATLAS);
-	} else if (se->job != job) {
+	} else if (atlas_rq->curr != job) {
 		/* Account properly, if the same task runs, but with a
 		 * different job
 		 */
@@ -1095,14 +1080,13 @@ out_task:
 		update_stats_curr_start(rq, se);
 	}
 
-	se->job = job;
-	atlas_rq->curr = se;
+	atlas_rq->curr = job;
 
 	atlas_debug(PICK_NEXT_TASK, JOB_FMT " to run.",
-		    JOB_ARG(atlas_rq->curr->job));
+		    JOB_ARG(atlas_rq->curr));
 
-	return atlas_task_of(atlas_rq->curr);
 
+	return atlas_rq->curr->tsk;
 }
 
 static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
@@ -1110,7 +1094,7 @@ static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se = &prev->atlas;
 
-	atlas_debug(PUT_PREV_TASK, JOB_FMT "%s", JOB_ARG(se->job),
+	atlas_debug(PUT_PREV_TASK, JOB_FMT "%s", JOB_ARG(atlas_rq->curr),
 		    se->on_rq ? ", on_rq" : "");
 
 	stop_job_timer(atlas_rq);
@@ -1131,7 +1115,7 @@ static void set_curr_task_atlas(struct rq *rq)
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_entity *se = &rq->curr->se;
 
-	atlas_debug(SET_CURR_TASK, JOB_FMT, JOB_ARG(atlas_se->job));
+	atlas_debug(SET_CURR_TASK, JOB_FMT, JOB_ARG(atlas_rq->curr));
 
 	if(se->on_rq) {
 		update_stats_wait_end(rq, se);
@@ -1139,7 +1123,6 @@ static void set_curr_task_atlas(struct rq *rq)
 	update_stats_curr_start(rq, atlas_se);
 
 	BUG_ON(atlas_rq->curr);
-	atlas_rq->curr = atlas_se;
 	/* TODO: CONFIG_SCHEDSTAT accounting. */
 	se->prev_sum_exec_runtime = se->sum_exec_runtime;
 }
