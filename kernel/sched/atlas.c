@@ -932,10 +932,13 @@ void atlas_cfs_blocked(struct rq *rq, struct task_struct *p)
 	if (!sysctl_sched_atlas_advance_in_cfs)
 		return;
 
+	/* This might be an Recover job running in the slack of an ATLAS job */
+	if (p->policy != SCHED_NORMAL)
+		return;
+
 	assert_raw_spin_locked(&rq->lock);
 
 	BUG_ON(p->sched_class != &fair_sched_class);
-	BUG_ON(p->policy != SCHED_NORMAL);
 	BUG_ON(p->on_rq);
 	BUG_ON(atlas_rq->slack_task == NULL);
 	BUG_ON(atlas_rq->timer_target != ATLAS_SLACK);
