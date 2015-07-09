@@ -1164,7 +1164,7 @@ static void switched_from_atlas(struct rq *rq, struct task_struct *p)
 	if (!list_empty(&p->atlas.jobs)) {
 		cpumask_t mask;
 		cpumask_clear(&mask);
-		cpumask_set_cpu(smp_processor_id(), &mask);
+		cpumask_set_cpu(p->atlas.last_cpu, &mask);
 		do_set_cpus_allowed(p, &mask);
 		atlas_debug(PARTITION,
 			    "Setting allowed CPUs for %s/%d to %d %*pb[l]",
