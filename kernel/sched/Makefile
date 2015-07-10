@@ -12,6 +12,8 @@ CFLAGS_core.o := $(PROFILING) -fno-omit-frame-pointer
 endif
 
 obj-y += core.o loadavg.o clock.o cputime.o
+CFLAGS_atlas.o += -I$(src)
+
 obj-y += idle_task.o fair.o rt.o deadline.o stop_task.o
 obj-y += wait.o completion.o idle.o
 obj-$(CONFIG_ATLAS) += atlas_common.o atlas.o

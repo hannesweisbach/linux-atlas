@@ -89,9 +89,6 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/sched.h>
-#ifdef CONFIG_ATLAS_TRACE
-#include <trace/events/atlas.h>
-#endif
 
 DEFINE_MUTEX(sched_domains_mutex);
 DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
@@ -836,9 +833,6 @@ static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 	if (!(flags & ENQUEUE_RESTORE))
 		sched_info_queued(rq, p);
 	p->sched_class->enqueue_task(rq, p, flags);
-#ifdef CONFIG_ATLAS_TRACE
-	trace_atlas_enqueue_task(p, rq);
-#endif
 }
 
 static inline void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
@@ -847,9 +841,6 @@ static inline void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 	if (!(flags & DEQUEUE_SAVE))
 		sched_info_dequeued(rq, p);
 	p->sched_class->dequeue_task(rq, p, flags);
-#ifdef CONFIG_ATLAS_TRACE
-	trace_atlas_dequeue_task(p, rq);
-#endif
 }
 
 void activate_task(struct rq *rq, struct task_struct *p, int flags)
@@ -3096,9 +3087,6 @@ pick_next_task(struct rq *rq, struct task_struct *prev)
 		if (unlikely(!p))
 			p = idle_sched_class.pick_next_task(rq, prev);
 
-#ifdef CONFIG_ATLAS_TRACE
-		trace_atlas_pick_next_task(rq, p);
-#endif
 		return p;
 	}
 
@@ -3108,9 +3096,6 @@ again:
 		if (p) {
 			if (unlikely(p == RETRY_TASK))
 				goto again;
-#ifdef CONFIG_ATLAS_TRACE
-			trace_atlas_pick_next_task(rq, p);
-#endif
 			return p;
 		}
 	}
@@ -3196,9 +3181,6 @@ static void __sched notrace __schedule(bool preempt)
 
 	rq->clock_skip_update <<= 1; /* promote REQ to ACT */
 
-#ifdef CONFIG_ATLAS_TRACE
-	trace_atlas_enter(rq);
-#endif
 	switch_count = &prev->nivcsw;
 	if (!preempt && prev->state) {
 		if (unlikely(signal_pending_state(prev->state, prev))) {
