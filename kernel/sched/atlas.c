@@ -18,7 +18,8 @@
 
 #include <trace/events/sched.h>
 #ifdef CONFIG_ATLAS_TRACE
-#include <trace/events/atlas.h>
+#define CREATE_TRACE_POINTS
+#include "atlas_trace.h"
 #endif
 
 #define cpumask_fmt "%*pb[l]"
@@ -27,27 +28,6 @@ const struct sched_class atlas_sched_class;
 
 unsigned int sysctl_sched_atlas_min_slack      = 1000000ULL;
 unsigned int sysctl_sched_atlas_advance_in_cfs = 0;
-
-void sched_log(const char *fmt, ...)
-{
-	va_list args;
-#if CONFIG_ATLAS_TRACE
-	char buf[50];
-
-	va_start(args, fmt);
-	vsnprintf(buf, sizeof(buf), fmt, args);
-	va_end(args);
-
-	trace_atlas_log(&buf[0]);
-#endif
-	preempt_disable();
-
-	va_start(args, fmt);
-	vprintk_emit(0, LOGLEVEL_SCHED, NULL, 0, fmt, args);
-	va_end(args);
-
-	preempt_enable();
-}
 
 static inline void inc_nr_running(struct atlas_job_tree *tree)
 {
@@ -538,13 +518,6 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 	struct atlas_rq *atlas_rq = container_of(timer, struct atlas_rq, timer);
 	struct rq *rq = rq_of(atlas_rq);
 
-	sched_log("Timer: %s",
-		  atlas_rq->timer_target == ATLAS_JOB
-				  ? "JOB"
-				  : atlas_rq->timer_target == ATLAS_SLACK
-						    ? "SLACK"
-						    : "BUG");
-
 	switch (atlas_rq->timer_target) {
 		case ATLAS_JOB:
 			atlas_debug_(TIMER, "Deadline for " JOB_FMT,
@@ -888,6 +861,9 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 		atlas_debug(RUNQUEUE, "Removing " JOB_FMT " from the RQ (%lld)",
 			    JOB_ARG(job), ktime_to_ns(now));
 		BUG_ON(!is_atlas_job(job));
+#ifdef CONFIG_ATLAS_TRACE
+		trace_atlas_job_missed(job);
+#endif
 		remove_depleted_job_from_tree(jobs);
 		if (ktime_compare(remaining_execution_time(job),
 				  ktime_set(0, 30000)) > 0) {
@@ -1100,6 +1076,9 @@ out_task:
 
 	atlas_rq->curr = job;
 
+#ifdef CONFIG_ATLAS_TRACE
+	trace_atlas_job_select(job);
+#endif
 	atlas_debug(PICK_NEXT_TASK, JOB_FMT " to run.",
 		    JOB_ARG(atlas_rq->curr));
 
@@ -1410,7 +1389,9 @@ static void schedule_job(struct atlas_job *const job)
 		stop_timer(atlas_rq);
 
 		insert_job_into_tree(&atlas_rq->jobs[ATLAS], job);
-
+#ifdef CONFIG_ATLAS_TRACE
+		trace_atlas_job_submit(job);
+#endif
 		/* If there is no job before the new job in the RQ, timers need
 		 * to be adjusted or a reschedule is necessary.  The update
 		 * flag is used when no ATLAS tasks are runnable (i.e. tasks
@@ -1443,6 +1424,9 @@ static void destroy_first_job(struct task_struct *tsk)
 
 	BUG_ON(!job);
 
+#ifdef CONFIG_ATLAS_TRACE
+	trace_atlas_job_remove(job);
+#endif
 	atlas_debug(SYS_NEXT, "Finished " JOB_FMT " at "
 			      "%lld under %s (%s)",
 		    JOB_ARG(job), ktime_to_ms(ktime_get()),
@@ -1552,6 +1536,9 @@ out_timer:
 	BUG_ON(rq->curr == NULL);
 	resched_curr(rq);
 
+#ifdef CONFIG_ATLAS_TRACE
+	trace_atlas_job_start(next_job);
+#endif
 	atlas_debug_(SYS_NEXT,
 		     "Returning with " JOB_FMT " Job timer set to %lldms",
 		     JOB_ARG(next_job), ktime_to_ms(next_job->deadline));
@@ -1670,6 +1657,9 @@ SYSCALL_DEFINE4(atlas_update, pid_t, pid, uint64_t, id, struct timeval __user *,
 
 			raw_spin_lock(&job->tree->rq->atlas.lock);
 
+#ifdef CONFIG_ATLAS_TRACE
+			trace_atlas_job_update(job);
+#endif
 			if (deadline != NULL)
 				deadline_ = timeval_to_ktime(ldeadline);
 			else
@@ -1684,6 +1674,9 @@ SYSCALL_DEFINE4(atlas_update, pid_t, pid, uint64_t, id, struct timeval __user *,
 				      deadline_);
 			insert_job_into_tree(tmp, job);
 
+#ifdef CONFIG_ATLAS_TRACE
+			trace_atlas_job_updated(job);
+#endif
 			raw_spin_unlock(&job->tree->rq->atlas.lock);
 
 			found_job = true;
@@ -1723,6 +1716,9 @@ SYSCALL_DEFINE2(atlas_remove, pid_t, pid, uint64_t, id)
 		if (job->id == id) {
 			raw_spinlock_t *lock = &job->tree->rq->atlas.lock;
 			raw_spin_lock(lock);
+#ifdef CONFIG_ATLAS_TRACE
+			trace_atlas_job_remove(job);
+#endif
 			remove_job_from_tree(job);
 			list_del(&job->list);
 			job_dealloc(job);
