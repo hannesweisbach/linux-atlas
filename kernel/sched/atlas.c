@@ -99,6 +99,18 @@ static inline bool is_cfs_job(struct atlas_job *job)
 	return &job->tree->rq->atlas.jobs[CFS] == job->tree;
 }
 
+static inline bool task_has_atlas_job(struct task_struct *tsk)
+{
+
+	struct atlas_job *job;
+	list_for_each_entry(job, &tsk->atlas.jobs, list)
+	{
+		if (is_atlas_job(job))
+			return true;
+	}
+	return false;
+}
+
 static struct atlas_job *pick_last_job(struct atlas_job_tree *tree)
 {
 	struct rb_node *last = rb_last(&tree->jobs);
@@ -1044,10 +1056,14 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	start_slack_timer(atlas_rq, atlas_job, slack);
 
 out_notask:
-	/* make sure all CFS tasks are runnable */
+	/* make sure all CFS tasks are runnable. Keep blocked tasks with ATLAS
+	 * jobs in ATLAS, so ATLAS can see the wakeup.
+	 */
 	for (job = pick_first_job(&atlas_rq->jobs[CFS]); job;
 	     job = pick_next_job(job)) {
-		atlas_set_scheduler(rq, job->tsk, SCHED_NORMAL);
+		if (task_on_rq_queued(job->tsk) ||
+		    !task_has_atlas_job(job->tsk))
+			atlas_set_scheduler(rq, job->tsk, SCHED_NORMAL);
 	}
 	/* no task because of:
 	 * - no jobs -> inc happens on submission of new job
