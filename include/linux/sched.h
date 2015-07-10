@@ -1202,7 +1202,6 @@ struct sched_atlas_entity {
 	unsigned int state;
 	unsigned long flags;
 	unsigned int on_rq;
-	// struct atlas_rq    *atlas_rq; //needed?
 
 	struct atlas_job *job;
 	struct list_head jobs;

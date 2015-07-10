@@ -738,7 +738,6 @@ static void update_curr_atlas(struct rq *rq)
 		delta_exec = 0;
 
 	se->exec_start = now;
-	// atlas_se->start = ktime_get();
 
 	schedstat_set(se->statistics.exec_max,
 		      max(delta_exec, se->statistics.exec_max));
@@ -1446,7 +1445,6 @@ static void destroy_first_job(struct task_struct *tsk)
 
 		if (is_cfs_job(job) && tsk->policy != SCHED_NORMAL) {
 			/* CFS job finished in ATLAS -> put it back into CFS. */
-			WARN(1, "CFS job finished in ATLAS");
 			atlas_set_scheduler(task_rq(tsk), tsk, SCHED_NORMAL);
 		}
 
@@ -1561,8 +1559,6 @@ out_timer:
 	 * current policy of this task.
 	 */
 	hrtimer_start(&se->timer, next_job->deadline, HRTIMER_MODE_ABS_PINNED);
-
-	sched_log("NEXT pid=%d job=%p", current->pid, current->atlas.job);
 
 	return 0;
 }
