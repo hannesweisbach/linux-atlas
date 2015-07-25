@@ -11,6 +11,7 @@
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
 #include <linux/cpumask.h>
+#include <linux/lockdep.h>
 
 #include "sched.h"
 #include "atlas.h"
@@ -423,6 +424,23 @@ static void remove_job_from_tree(struct atlas_job *const job)
 
 	if (atlas_job && curr != NULL)
 		rebuild_timeline(curr);
+}
+
+static void move_job_between_rqs(struct atlas_job *job, struct atlas_rq *to)
+{
+	const ptrdiff_t entry = job->tree - &job->tree->rq->atlas.jobs[ATLAS];
+	struct atlas_job_tree *dst = &to->jobs[entry];
+
+	lockdep_assert_held(&rq_of(to)->lock);
+	lockdep_assert_held(&job->tree->rq->lock);
+	lockdep_assert_held(&to->lock);
+	lockdep_assert_held(&job->tree->rq->atlas.lock);
+
+	BUG_ON(entry >= NR_CLASSES);
+	BUG_ON(entry < 0);
+
+	remove_job_from_tree(job);
+	insert_job_into_tree(dst, job);
 }
 
 /*
@@ -1170,14 +1188,7 @@ static void move_all_jobs(struct task_struct *p, struct atlas_rq *to)
 	spin_lock(&p->atlas.jobs_lock);
 	list_for_each_entry(job, &p->atlas.jobs, list)
 	{
-		const ptrdiff_t entry =
-				job->tree - &job->tree->rq->atlas.jobs[ATLAS];
-		struct atlas_job_tree *dst = &to->jobs[entry];
-		BUG_ON(entry >= NR_CLASSES);
-		assert_raw_spin_locked(&job->tree->rq->atlas.lock);
-		remove_job_from_tree(job);
-		insert_job_into_tree(dst, job);
-		atlas_debug(PARTITION, "to " JOB_FMT, JOB_ARG(job));
+		move_job_between_rqs(job, to);
 	}
 	spin_unlock(&p->atlas.jobs_lock);
 }
