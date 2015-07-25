@@ -142,6 +142,20 @@ remaining_execution_time(const struct atlas_job const *job)
 	return ktime_sub(job->sexectime, job->rexectime);
 }
 
+static bool rq_overloaded(const struct atlas_rq const *atlas_rq)
+{
+	const struct atlas_job const *j =
+			pick_first_job(&atlas_rq->jobs[ATLAS]);
+	ktime_t remaining, available;
+
+	if (j == NULL)
+		return false;
+
+	remaining = remaining_execution_time(j);
+	available = ktime_sub(j->sdeadline, ktime_get());
+	return ktime_compare(remaining, available) > 0;
+}
+
 static inline struct rq *rq_of(struct atlas_rq *atlas_rq)
 {
 	return container_of(atlas_rq, struct rq, atlas);
