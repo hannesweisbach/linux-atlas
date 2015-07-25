@@ -156,6 +156,15 @@ static ktime_t rq_load(const struct atlas_rq const *atlas_rq)
 	return ktime_sub(available, remaining);
 }
 
+static ktime_t rq_load_locked(struct atlas_rq *atlas_rq)
+{
+	ktime_t load;
+	raw_spin_lock(&atlas_rq->lock);
+	load = rq_load(atlas_rq);
+	raw_spin_unlock(&atlas_rq->lock);
+	return load;
+}
+
 static bool rq_overloaded(const struct atlas_rq const *atlas_rq)
 {
 	return ktime_compare(rq_load(atlas_rq), ktime_set(0, 0)) < 0;
