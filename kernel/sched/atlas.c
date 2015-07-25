@@ -419,7 +419,9 @@ ktime_t slacktime(struct atlas_job *job)
 	struct atlas_job *j = pick_prev_job(job);
 
 	for (; j; j = pick_prev_job(j)) {
-		exec_sum = ktime_add(exec_sum, remaining_execution_time(j));
+		/* remaining = requested - received exectime */
+		const ktime_t remaining = ktime_sub(j->exectime, j->rexectime);
+		exec_sum = ktime_add(exec_sum, remaining);
 	}
 
 	return ktime_sub(slack, exec_sum);
