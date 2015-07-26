@@ -43,6 +43,7 @@ extern unsigned int sysctl_sched_child_runs_first;
 #ifdef CONFIG_ATLAS
 extern unsigned int sysctl_sched_atlas_min_slack;
 extern unsigned int sysctl_sched_atlas_advance_in_cfs;
+extern unsigned int sysctl_sched_atlas_migrate;
 #endif
 
 enum sched_tunable_scaling {

@@ -33,6 +33,7 @@ const struct sched_class atlas_sched_class;
 
 unsigned int sysctl_sched_atlas_min_slack      = 1000000ULL;
 unsigned int sysctl_sched_atlas_advance_in_cfs = 0;
+unsigned int sysctl_sched_atlas_migrate = 0;
 
 static inline void inc_nr_running(struct atlas_job_tree *tree)
 {
