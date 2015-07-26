@@ -1336,6 +1336,8 @@ void exit_atlas(struct task_struct *p)
 
 	atlas_set_scheduler(task_rq(p), p, SCHED_NORMAL);
 
+	p->atlas.flags |= ATLAS_EXIT;
+
 	for (; !list_empty(&p->atlas.jobs);)
 		destroy_first_job(p);
 
@@ -1620,7 +1622,8 @@ out_timer:
 
 static int validate_tid(struct task_struct *tsk, pid_t pid, enum debug caller)
 {
-	if (tsk == NULL) {
+	/* Pretend to not have found a task that is exiting. */
+	if ((tsk == NULL) || (tsk->atlas.flags & ATLAS_EXIT)) {
 		atlas_debug_(caller, "No process with PID %d found.", pid);
 		return -ESRCH;
 	}
