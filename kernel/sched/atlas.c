@@ -1386,8 +1386,8 @@ static void schedule_job(struct atlas_job *const job)
 	{
 		spin_lock(&se->jobs_lock);
 
-		/* TODO: se->state is not protected by any lock */
-		wakeup = list_empty(&se->jobs) && (se->state == ATLAS_BLOCKED);
+		/* TODO: se->flags is not protected by any lock */
+		wakeup = list_empty(&se->jobs) && (se->flags & ATLAS_BLOCKED);
 		/* in submission order. */
 		list_add_tail(&job->list, &se->jobs);
 		spin_unlock(&se->jobs_lock);
@@ -1507,9 +1507,10 @@ SYSCALL_DEFINE0(atlas_next)
 	atlas_set_scheduler(rq, current, SCHED_NORMAL);
 
 	task_rq_unlock(rq, current, &flags);
-	se->state = ATLAS_BLOCKED;
 
-	for(;;) {
+	se->flags |= ATLAS_BLOCKED;
+
+	for (;;) {
 		atlas_debug(SYS_NEXT, "Start waiting");
 		set_current_state(TASK_INTERRUPTIBLE);
 		
@@ -1531,13 +1532,13 @@ SYSCALL_DEFINE0(atlas_next)
 		 */
 		atlas_debug(SYS_NEXT, "Signal in task %s/%d", current->comm,
 			    task_tid(current));
-		se->state = ATLAS_UNDEF;
+		se->flags &= ~ATLAS_BLOCKED;
 		__set_current_state(TASK_RUNNING);
 		return -EINTR;
 	}
 
 	__set_current_state(TASK_RUNNING);
-	se->state = ATLAS_RUNNING;
+	se->flags &= ~ATLAS_BLOCKED;
 
 	rq = task_rq_lock(current, &flags);
 
