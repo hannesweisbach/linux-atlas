@@ -934,6 +934,16 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 }
 
+static bool job_runnable(struct atlas_job *job)
+{
+	BUG_ON(job == NULL);
+	/* A job is runnable if its task is not blocked and the task is queued
+	 * on this CPU/RQ (might have been pulled)
+	 */
+	return task_on_rq_queued(job->tsk) &&
+	       (task_rq(job->tsk) == job->tree->rq);
+}
+
 static struct atlas_job *select_job(struct atlas_job_tree *tree)
 {
 	struct atlas_job *job = NULL;
@@ -941,7 +951,7 @@ static struct atlas_job *select_job(struct atlas_job_tree *tree)
 	if (not_runnable(tree))
 		return job;
 
-	for (job = pick_first_job(tree); job && !task_on_rq_queued(job->tsk);
+	for (job = pick_first_job(tree); job && !job_runnable(job);
 	     job = pick_next_job(job)) {
 		struct task_struct *tsk = job->tsk;
 		if (!task_on_rq_queued(tsk)) {
