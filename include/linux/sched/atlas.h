@@ -4,7 +4,7 @@
 enum atlas_flags {
 	ATLAS_INIT = 0x1,
 	ATLAS_BLOCKED = 0x2,
-	ATLAS_EXIT = 0x4,
+	ATLAS_EXIT = 0x3,
 };
 
 static inline int atlas_task(struct task_struct *p)
