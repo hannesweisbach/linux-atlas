@@ -24,6 +24,9 @@
 
 #define cpumask_fmt "%*pb[l]"
 
+#define for_each_job(job, tree)                                                \
+	for (job = pick_first_job(tree); job; job = pick_next_job(job))
+
 const struct sched_class atlas_sched_class;
 
 unsigned int sysctl_sched_atlas_min_slack      = 1000000ULL;
@@ -208,8 +211,8 @@ static inline void job_dealloc(struct atlas_job *job)
 			struct atlas_rq *atlas_rq = &rq->atlas;
 
 			struct atlas_job *pos = NULL;
-			for (pos = pick_first_job(&atlas_rq->jobs[ATLAS]); pos;
-			     pos = pick_next_job(pos)) {
+			for_each_job(pos, &atlas_rq->jobs[ATLAS])
+			{
 				WARN(job == pos, JOB_FMT " is still in rb tree",
 				     JOB_ARG(job));
 			}
@@ -760,8 +763,8 @@ static void update_curr_atlas(struct rq *rq)
 		struct atlas_job *job;
 		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 
-		for (job = pick_first_job(&atlas_rq->jobs[ATLAS]); job;
-		     job = pick_next_job(job)) {
+		for_each_job(job, &atlas_rq->jobs[ATLAS])
+		{
 			struct atlas_job *next = pick_next_job(job);
 			if (next == NULL)
 				break;
@@ -1040,8 +1043,8 @@ out_notask:
 	/* make sure all CFS tasks are runnable. Keep blocked tasks with ATLAS
 	 * jobs in ATLAS, so ATLAS can see the wakeup.
 	 */
-	for (job = pick_first_job(&atlas_rq->jobs[CFS]); job;
-	     job = pick_next_job(job)) {
+	for_each_job(job, &atlas_rq->jobs[CFS])
+	{
 		if (task_on_rq_queued(job->tsk) ||
 		    !task_has_atlas_job(job->tsk))
 			atlas_set_scheduler(rq, job->tsk, SCHED_NORMAL);
