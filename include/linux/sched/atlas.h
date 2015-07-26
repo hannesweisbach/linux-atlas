@@ -3,12 +3,7 @@
 
 enum atlas_flags {
 	ATLAS_INIT = 0x1,
-};
-
-enum atlas_state {
-	ATLAS_UNDEF,
-	ATLAS_BLOCKED,
-	ATLAS_RUNNING,
+	ATLAS_BLOCKED = 0x2,
 };
 
 static inline int atlas_task(struct task_struct *p)
