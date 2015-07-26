@@ -11,6 +11,7 @@
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
 #include <linux/cpumask.h>
+#include <linux/bitops.h>
 
 #include "sched.h"
 #include "atlas.h"
@@ -1294,12 +1295,12 @@ void exit_atlas(struct task_struct *p)
 
 	atlas_set_scheduler(task_rq(p), p, SCHED_NORMAL);
 
-	p->atlas.flags |= ATLAS_EXIT;
+	task_rq_unlock(rq, p, &flags);
+
+	set_bit(ATLAS_EXIT, &p->atlas.flags);
 
 	for (; !list_empty(&p->atlas.jobs);)
 		destroy_first_job(p);
-
-	task_rq_unlock(rq, p, &flags);
 
 	if (atlas_task) {
 		debug_rq();
@@ -1388,8 +1389,8 @@ static void schedule_job(struct atlas_job *const job)
 	{
 		spin_lock(&se->jobs_lock);
 
-		/* TODO: se->flags is not protected by any lock */
-		wakeup = list_empty(&se->jobs) && (se->flags & ATLAS_BLOCKED);
+		wakeup = list_empty(&se->jobs) &&
+			 test_bit(ATLAS_BLOCKED, &se->flags);
 		/* in submission order. */
 		list_add_tail(&job->list, &se->jobs);
 		spin_unlock(&se->jobs_lock);
@@ -1490,7 +1491,7 @@ SYSCALL_DEFINE0(atlas_next)
 		update_curr_atlas(rq);
 	}
 
-	if (!(se->flags & ATLAS_INIT))
+	if (!test_bit(ATLAS_INIT, &se->flags))
 		destroy_first_job(current);
 
 	/*
@@ -1510,7 +1511,7 @@ SYSCALL_DEFINE0(atlas_next)
 
 	task_rq_unlock(rq, current, &flags);
 
-	se->flags |= ATLAS_BLOCKED;
+	set_bit(ATLAS_BLOCKED, &se->flags);
 
 	for (;;) {
 		atlas_debug(SYS_NEXT, "Start waiting");
@@ -1534,18 +1535,18 @@ SYSCALL_DEFINE0(atlas_next)
 		 */
 		atlas_debug(SYS_NEXT, "Signal in task %s/%d", current->comm,
 			    task_tid(current));
-		se->flags &= ~ATLAS_BLOCKED;
+		clear_bit(ATLAS_BLOCKED, &se->flags);
 		__set_current_state(TASK_RUNNING);
 		return -EINTR;
 	}
 
 	__set_current_state(TASK_RUNNING);
-	se->flags &= ~ATLAS_BLOCKED;
+	clear_bit(ATLAS_BLOCKED, &se->flags);
 
 	rq = task_rq_lock(current, &flags);
 
 out_timer:
-	se->flags &= ~ATLAS_INIT;
+	clear_bit(ATLAS_INIT, &se->flags);
 	BUG_ON(rq->curr == NULL);
 	resched_curr(rq);
 
@@ -1582,7 +1583,7 @@ out_timer:
 static int validate_tid(struct task_struct *tsk, pid_t pid, enum debug caller)
 {
 	/* Pretend to not have found a task that is exiting. */
-	if ((tsk == NULL) || (tsk->atlas.flags & ATLAS_EXIT)) {
+	if ((tsk == NULL) || test_bit(ATLAS_EXIT, &tsk->atlas.flags)) {
 		atlas_debug_(caller, "No process with PID %d found.", pid);
 		return -ESRCH;
 	}
