@@ -393,6 +393,9 @@ static void remove_job_from_tree(struct atlas_job *const job)
 	job->tree = NULL;
 	--job->tsk->atlas.nr_jobs[class];
 
+	if (job->tsk->atlas.job == job)
+		job->tsk->atlas.job = NULL;
+
 	if (atlas_job && curr != NULL)
 		rebuild_timeline(curr);
 }
@@ -1077,6 +1080,7 @@ out_task:
 	}
 
 	atlas_rq->curr = job;
+	se->job = job;
 
 #ifdef CONFIG_ATLAS_TRACE
 	trace_atlas_job_select(job);
@@ -1457,6 +1461,7 @@ static void destroy_first_job(struct task_struct *tsk)
 		remove_job_from_tree(job);
 		raw_spin_unlock_irqrestore(atlas_lock, flags);
 	}
+
 
 	job_dealloc(job);
 }
