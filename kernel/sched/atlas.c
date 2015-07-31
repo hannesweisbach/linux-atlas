@@ -1208,11 +1208,7 @@ static int select_task_rq_atlas(struct task_struct *p, int prev_cpu,
 				int sd_flag, int flags)
 {
 	atlas_debug(PARTITION, "CPU for Task %s/%d", p->comm, task_tid(p));
-#if 0
 	return task_cpu(p);
-#else
-	return task_cpu(p) + 1 % num_possible_cpus();
-#endif
 }
 
 static void migrate_task_rq_atlas(struct task_struct *p, int next_cpu)
