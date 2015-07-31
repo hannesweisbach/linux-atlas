@@ -81,6 +81,24 @@ static inline const char *job_rq_name(struct atlas_job *job)
 	return job->tree->name;
 }
 
+static inline const char *task_sched_name(struct task_struct *tsk)
+{
+	if (tsk->sched_class == &stop_sched_class)
+		return "STOP";
+	else if (tsk->sched_class == &dl_sched_class)
+		return "DEADLINE";
+	else if (tsk->sched_class == &rt_sched_class)
+		return "REALTIME";
+	else if (tsk->sched_class == &atlas_sched_class)
+		return "ATLAS";
+	else if (tsk->sched_class == &fair_sched_class)
+		return "CFS";
+	else if (tsk->sched_class == &idle_sched_class)
+		return "IDLE";
+	else
+		return "Unknown";
+}
+
 static inline pid_t task_tid(struct task_struct *tsk)
 {
 	return task_pid_nr_ns(tsk, task_active_pid_ns(tsk));
