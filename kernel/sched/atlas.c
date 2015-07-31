@@ -1299,7 +1299,6 @@ void exit_atlas(struct task_struct *p)
 		destroy_first_job(p);
 
 	if (atlas_task) {
-		debug_rq();
 		printk(KERN_EMERG "Task %s/%d in %s is exiting (%d/%d/%d)\n",
 		       p->comm, task_tid(p), sched_name(p->policy),
 		       rq->nr_running, atlas_rq->jobs[ATLAS].nr_running,
