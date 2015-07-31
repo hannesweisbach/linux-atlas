@@ -99,6 +99,17 @@ static inline const char *task_sched_name(struct task_struct *tsk)
 		return "Unknown";
 }
 
+static unsigned rq_nr_jobs(const struct rb_root *root)
+{
+	unsigned nr_jobs = 0;
+	struct rb_node *node;
+
+	for (node = rb_first(root); node; node = rb_next(node))
+		++nr_jobs;
+
+	return nr_jobs;
+}
+
 static inline pid_t task_tid(struct task_struct *tsk)
 {
 	return task_pid_nr_ns(tsk, task_active_pid_ns(tsk));
