@@ -942,6 +942,13 @@ static inline void unregister_sched_domain_sysctl(void)
 }
 #endif
 
+struct migration_arg {
+	struct task_struct *task;
+	int dest_cpu;
+};
+
+int migration_cpu_stop(void *data);
+
 #else
 
 static inline void sched_ttwu_pending(void) { }
