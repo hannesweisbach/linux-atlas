@@ -1291,7 +1291,8 @@ static void migrate_task_rq_atlas(struct task_struct *p, int next_cpu)
 	if (not_runnable(&prev_rq->jobs[CFS]) && has_jobs(&prev_rq->jobs[CFS]))
 		inc_nr_running(&prev_rq->jobs[CFS]);
 
-	move_all_jobs(p, next_rq);
+	if (!test_bit(ATLAS_MIGRATE_NO_JOBS, &p->atlas.flags))
+		move_all_jobs(p, next_rq);
 
 	raw_spin_unlock(&prev_rq->lock);
 	raw_spin_unlock(&next_rq->lock);
