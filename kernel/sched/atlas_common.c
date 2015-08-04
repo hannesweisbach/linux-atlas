@@ -79,7 +79,7 @@ size_t print_atlas_job(const struct atlas_job const *job, char *buf,
 	if (job != NULL) {
 		return scnprintf(buf, size,
 				 "Job %5llu %8lld - %8lld (%8lld/%4lld/%4lld) "
-				 "%s/%5d %s %s\n",
+				 "%s/%5d %s %7s %d\n",
 				 job->id, ktime_to_ms(job_start(job)),
 				 ktime_to_ms(job->sdeadline),
 				 ktime_to_ms(job->deadline),
@@ -88,7 +88,7 @@ size_t print_atlas_job(const struct atlas_job const *job, char *buf,
 				 task_tid(job->tsk),
 				 !task_on_rq_queued(job->tsk) ? "blocked"
 							      : "       ",
-				 task_sched_name(job->tsk));
+				 task_sched_name(job->tsk), job->original_cpu);
 	}
 	return 0;
 }

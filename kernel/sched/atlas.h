@@ -17,6 +17,7 @@ struct atlas_job {
 	ktime_t sexectime;
 	ktime_t rexectime;
 	uint64_t id;
+	int original_cpu;
 };
 
 enum atlas_timer_target {
