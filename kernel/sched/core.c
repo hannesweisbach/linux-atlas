@@ -1137,13 +1137,6 @@ out:
 	return ret;
 }
 
-struct migration_arg {
-	struct task_struct *task;
-	int dest_cpu;
-};
-
-static int migration_cpu_stop(void *data);
-
 /*
  * wait_task_inactive - wait for a thread to unschedule.
  *
@@ -4964,7 +4957,7 @@ void sched_setnuma(struct task_struct *p, int nid)
  * and performs thread migration by bumping thread off CPU then
  * 'pushing' onto another runqueue.
  */
-static int migration_cpu_stop(void *data)
+int migration_cpu_stop(void *data)
 {
 	struct migration_arg *arg = data;
 
