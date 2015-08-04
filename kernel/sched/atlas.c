@@ -1278,7 +1278,6 @@ static void migrate_task_rq_atlas(struct task_struct *p, int next_cpu)
 	struct atlas_rq *prev_rq = &cpu_rq(prev_cpu)->atlas;
 	struct atlas_rq *next_rq = &cpu_rq(next_cpu)->atlas;
 
-	preempt_disable();
 #if 0
 	atlas_debug(PARTITION, "Migrate %s/%d from CPU %d to CPU %d", p->comm,
 		    task_tid(p), prev_cpu, next_cpu);
@@ -1303,7 +1302,6 @@ static void migrate_task_rq_atlas(struct task_struct *p, int next_cpu)
 	raw_spin_unlock(&prev_rq->lock);
 	raw_spin_unlock(&next_rq->lock);
 
-	preempt_enable();
 }
 
 void set_task_rq_atlas(struct task_struct *p, int next_cpu)
