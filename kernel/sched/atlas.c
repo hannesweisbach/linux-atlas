@@ -1502,19 +1502,21 @@ static void destroy_first_job(struct task_struct *tsk)
 
 	if (job_in_rq(job)) {
 		unsigned long flags;
+		struct rq *rq = task_rq_lock(tsk, &flags);
 		raw_spinlock_t *atlas_lock = &job->tree->rq->atlas.lock;
 
 		if (is_cfs_job(job) && tsk->policy != SCHED_NORMAL) {
 			/* CFS job finished in ATLAS -> put it back into CFS. */
-			atlas_set_scheduler(task_rq(tsk), tsk, SCHED_NORMAL);
+			atlas_set_scheduler(rq, tsk, SCHED_NORMAL);
 		}
 
 		atlas_debug(SYS_NEXT, "Removing " JOB_FMT " from %s",
 			    JOB_ARG(job), job_rq_name(job));
 
-		raw_spin_lock_irqsave(atlas_lock, flags);
+		raw_spin_lock(atlas_lock);
 		remove_job_from_tree(job);
-		raw_spin_unlock_irqrestore(atlas_lock, flags);
+		raw_spin_unlock(atlas_lock);
+		task_rq_unlock(rq, tsk, &flags);
 	}
 
 	{
@@ -1531,10 +1533,10 @@ static void destroy_first_job(struct task_struct *tsk)
 SYSCALL_DEFINE0(atlas_next)
 {
 	unsigned long flags;
-	struct rq *rq = task_rq_lock(current, &flags);
-	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se = &current->atlas;
 	struct atlas_job *next_job = NULL;
+	struct rq *rq = task_rq_lock(current, &flags);
+	struct atlas_rq *atlas_rq = &rq->atlas;
 
 	hrtimer_cancel(&se->timer);
 
@@ -1546,6 +1548,10 @@ SYSCALL_DEFINE0(atlas_next)
 		update_rq_clock(rq);
 		update_curr_atlas(rq);
 	}
+
+	task_rq_unlock(rq, current, &flags);
+	rq = NULL;
+	atlas_rq = NULL;
 
 	if (!test_bit(ATLAS_INIT, &se->flags))
 		destroy_first_job(current);
@@ -1563,9 +1569,23 @@ SYSCALL_DEFINE0(atlas_next)
 	if (next_job != NULL)
 		goto out_timer;
 
-	atlas_set_scheduler(rq, current, SCHED_NORMAL);
+	{
+		bool no_jobs;
+		rq = task_rq_lock(current, &flags);
+		atlas_rq = &rq->atlas;
 
-	task_rq_unlock(rq, current, &flags);
+		atlas_set_scheduler(rq, current, SCHED_NORMAL);
+
+		no_jobs = has_no_jobs(&atlas_rq->jobs[ATLAS]);
+		task_rq_unlock(rq, current, &flags);
+		rq = NULL;
+		atlas_rq = NULL;
+
+		/*lock hole, need to disable IRQs here */
+
+		if (no_jobs && sysctl_sched_atlas_migrate)
+			idle_balance();
+	}
 
 	set_bit(ATLAS_BLOCKED, &se->flags);
 
@@ -1599,12 +1619,8 @@ SYSCALL_DEFINE0(atlas_next)
 	__set_current_state(TASK_RUNNING);
 	clear_bit(ATLAS_BLOCKED, &se->flags);
 
-	rq = task_rq_lock(current, &flags);
-
 out_timer:
 	clear_bit(ATLAS_INIT, &se->flags);
-	BUG_ON(rq->curr == NULL);
-	resched_curr(rq);
 
 #ifdef CONFIG_ATLAS_TRACE
 	trace_atlas_job_start(next_job);
@@ -1612,6 +1628,12 @@ out_timer:
 	atlas_debug_(SYS_NEXT,
 		     "Returning with " JOB_FMT " Job timer set to %lldms",
 		     JOB_ARG(next_job), ktime_to_ms(next_job->deadline));
+
+	rq = task_rq_lock(current, &flags);
+	atlas_rq = &rq->atlas;
+
+	BUG_ON(rq->curr == NULL);
+	resched_curr(rq);
 
 	if (is_cfs_job(next_job)) {
 		/* Staying in ATLAS or Recover could mean to never run again (if
@@ -1625,6 +1647,9 @@ out_timer:
 	}
 
 	task_rq_unlock(rq, current, &flags);
+	rq = NULL;
+	atlas_rq = NULL;
+
 	/*
 	 * The se-timer causes SIGXCPU to be delivered to userspace. If deadline
 	 * has alredy been missed, the timer callback is executed
