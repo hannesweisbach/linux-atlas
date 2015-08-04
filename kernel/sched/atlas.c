@@ -441,8 +441,6 @@ static void move_job_between_rqs(struct atlas_job *job, struct atlas_rq *to)
 	const ptrdiff_t entry = job->tree - &job->tree->rq->atlas.jobs[ATLAS];
 	struct atlas_job_tree *dst = &to->jobs[entry];
 
-	lockdep_assert_held(&rq_of(to)->lock);
-	lockdep_assert_held(&job->tree->rq->lock);
 	lockdep_assert_held(&to->lock);
 	lockdep_assert_held(&job->tree->rq->atlas.lock);
 
