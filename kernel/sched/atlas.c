@@ -1500,13 +1500,6 @@ static void destroy_first_job(struct task_struct *tsk)
 		    JOB_ARG(job), ktime_to_ms(ktime_get()),
 		    sched_name(current->policy), job_rq_name(job));
 
-	{
-		unsigned long flags;
-		spinlock_t *jobs_lock = &tsk->atlas.jobs_lock;
-		spin_lock_irqsave(jobs_lock, flags);
-		list_del(&job->list);
-		spin_unlock_irqrestore(jobs_lock, flags);
-	}
 	if (job_in_rq(job)) {
 		unsigned long flags;
 		raw_spinlock_t *atlas_lock = &job->tree->rq->atlas.lock;
@@ -1524,6 +1517,13 @@ static void destroy_first_job(struct task_struct *tsk)
 		raw_spin_unlock_irqrestore(atlas_lock, flags);
 	}
 
+	{
+		unsigned long flags;
+		spinlock_t *jobs_lock = &tsk->atlas.jobs_lock;
+		spin_lock_irqsave(jobs_lock, flags);
+		list_del(&job->list);
+		spin_unlock_irqrestore(jobs_lock, flags);
+	}
 
 	job_dealloc(job);
 }
