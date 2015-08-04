@@ -907,6 +907,13 @@ static inline unsigned int group_first_cpu(struct sched_group *group)
 
 extern int group_balance_cpu(struct sched_group *sg);
 
+struct migration_arg {
+	struct task_struct *task;
+	int dest_cpu;
+};
+
+int migration_cpu_stop(void *data);
+
 #else
 
 static inline void sched_ttwu_pending(void) { }

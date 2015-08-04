@@ -1120,7 +1120,7 @@ static struct rq *__migrate_task(struct rq *rq, struct task_struct *p, int dest_
  * and performs thread migration by bumping thread off CPU then
  * 'pushing' onto another runqueue.
  */
-static int migration_cpu_stop(void *data)
+int migration_cpu_stop(void *data)
 {
 	struct migration_arg *arg = data;
 	struct task_struct *p = arg->task;
