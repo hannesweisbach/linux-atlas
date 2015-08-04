@@ -11,8 +11,13 @@
 #include <linux/spinlock.h>
 #include <linux/rcupdate.h>
 #include <linux/cpumask.h>
+#include <linux/init.h>
+#include <linux/sort.h>
 #include <linux/lockdep.h>
 #include <linux/bitops.h>
+#include <linux/irqflags.h>
+
+#include <asm/tlb.h>
 
 #include "sched.h"
 #include "atlas.h"
@@ -455,6 +460,187 @@ static void move_job_between_rqs(struct atlas_job *job, struct atlas_rq *to)
 
 	remove_job_from_tree(job);
 	insert_job_into_tree(dst, job);
+}
+
+static int atlas_rq_cmp(const void *lhs, const void *rhs)
+{
+	ktime_t lhs_ = rq_load_locked(*(struct atlas_rq **)lhs);
+	ktime_t rhs_ = rq_load_locked(*(struct atlas_rq **)rhs);
+	return ktime_compare(lhs_, rhs_);
+}
+
+static void atlas_rq_swap(void *lhs, void *rhs, int size)
+{
+	struct atlas_rq *lhs_ = *(struct atlas_rq **)lhs;
+	struct atlas_rq *rhs_ = *(struct atlas_rq **)rhs;
+	*(struct atlas_rq **)lhs = rhs_;
+	*(struct atlas_rq **)rhs = lhs_;
+}
+
+static bool has_migrated_job(struct task_struct *task)
+{
+	struct rq *rq = task_rq(task);
+	struct atlas_job *j;
+
+	lockdep_assert_held(&rq->lock);
+	lockdep_assert_held(&rq->atlas.lock);
+
+	list_for_each_entry(j, &task->atlas.jobs, list)
+	{
+		if (j->original_cpu != -1)
+			return true;
+	}
+
+	return false;
+}
+
+/* migrates this job and all previously running jobs (expected to be in CFS
+ * and/or Recover.
+ */
+static void migrate_job(struct atlas_job *job, struct atlas_rq *to)
+{
+	struct atlas_job *j;
+	struct sched_atlas_entity *atlas_se = &job->tsk->atlas;
+
+	spin_lock(&atlas_se->jobs_lock);
+	list_for_each_entry(j, &atlas_se->jobs, list)
+	{
+		if (!is_atlas_job(j)) {
+			move_job_between_rqs(j, to);
+		}
+	}
+	spin_unlock(&atlas_se->jobs_lock);
+
+	move_job_between_rqs(job, to);
+	job->original_cpu = task_cpu(job->tsk);
+}
+
+/* almost verbatim from fair.c */
+static void detach_task(struct task_struct *p, int next_cpu)
+{
+	struct rq *rq = task_rq(p);
+	lockdep_assert_held(&rq->lock);
+
+	deactivate_task(rq, p, 0);
+	p->on_rq = TASK_ON_RQ_MIGRATING;
+	set_task_cpu(p, next_cpu);
+}
+
+static void attach_task(struct task_struct *p, struct rq *rq)
+{
+	lockdep_assert_held(&rq->lock);
+
+	BUG_ON(task_rq(p) != rq);
+	p->on_rq = TASK_ON_RQ_QUEUED;
+	activate_task(rq, p, 0);
+	check_preempt_curr(rq, p, 0);
+}
+
+static bool can_migrate_task(struct atlas_job *job, int new_cpu)
+{
+	struct task_struct *task = job->tsk;
+	struct rq *rq = task_rq(task);
+
+	lockdep_assert_held(&rq->lock);
+	lockdep_assert_held(&rq->atlas.lock);
+
+	if (!cpumask_test_cpu(new_cpu, &task->atlas.last_mask)) {
+		atlas_debug(PARTITION, "Migration to CPU %d failed because of "
+				       "mismatched cpuset %*pb",
+			    new_cpu, cpumask_pr_args(&task->atlas.last_mask));
+		schedstat_inc(task, se.statistics.nr_failed_migrations_affine);
+		return false;
+	}
+
+	if (task_running(rq, task)) {
+		schedstat_inc(task, se.statistics.nr_failed_migrations_running);
+		return false;
+	}
+
+	if (has_migrated_job(task)) {
+		atlas_debug(PARTITION, "Migration to CPU %d failed because the "
+				       "task already has a migrated job.",
+			    new_cpu);
+		return false;
+	}
+
+	return true;
+}
+
+static bool idle_balance(void)
+{
+	int cpu;
+	const int this_cpu = smp_processor_id();
+	bool migrated = false;
+	struct atlas_rq *this_rq = &cpu_rq(this_cpu)->atlas;
+	struct atlas_rq *atlas_rqs[num_possible_cpus()];
+
+	atlas_debug(PARTITION, "Balancing");
+
+	for_each_possible_cpu(cpu)
+	{
+		atlas_rqs[cpu] = &cpu_rq(cpu)->atlas;
+	}
+
+	/* Since lower slacktime means higher load, the array is sorted from
+	 * high-load RQs to low-load RQs
+	 */
+	sort(atlas_rqs, num_possible_cpus(), sizeof(struct atlas_rq *),
+	     atlas_rq_cmp, atlas_rq_swap);
+
+	/* 'cpu' is now just an index */
+	for_each_possible_cpu(cpu)
+	{
+		unsigned long flags;
+		struct atlas_rq *atlas_rq = atlas_rqs[cpu];
+		struct atlas_job *job;
+		struct task_struct *migrated_task = NULL;
+
+		/* Skip this RQ */
+		if (rq_of(atlas_rq) == cpu_rq(this_cpu))
+			continue;
+
+		local_irq_save(flags);
+		preempt_disable();
+
+		double_rq_lock(rq_of(atlas_rq), rq_of(this_rq));
+		double_raw_lock(&atlas_rq->lock, &this_rq->lock);
+
+		/* finds first job of a task that is not currently running */
+		for_each_job(job, &atlas_rq->jobs[ATLAS])
+		{
+			if (can_migrate_task(job, this_cpu)) {
+				atlas_debug(PARTITION, "LB " JOB_FMT,
+					    JOB_ARG(job));
+				migrate_job(job, this_rq);
+				migrated_task = job->tsk;
+				migrated = true;
+				break;
+			}
+		}
+
+		raw_spin_unlock(&atlas_rq->lock);
+		raw_spin_unlock(&this_rq->lock);
+
+		if (migrated_task != NULL) {
+			set_bit(ATLAS_MIGRATE_NO_JOBS,
+				&migrated_task->atlas.flags);
+			detach_task(migrated_task, this_cpu);
+			attach_task(migrated_task, cpu_rq(this_cpu));
+			clear_bit(ATLAS_MIGRATE_NO_JOBS,
+				  &migrated_task->atlas.flags);
+		}
+
+		double_rq_unlock(rq_of(atlas_rq), rq_of(this_rq));
+
+		preempt_enable();
+		local_irq_restore(flags);
+
+		if (migrated)
+			break;
+	}
+
+	return migrated;
 }
 
 /*
@@ -1517,6 +1703,34 @@ static void destroy_first_job(struct task_struct *tsk)
 		remove_job_from_tree(job);
 		raw_spin_unlock(atlas_lock);
 		task_rq_unlock(rq, tsk, &flags);
+	}
+
+	if (job->original_cpu != -1 &&
+	    !test_bit(ATLAS_EXIT, &job->tsk->atlas.flags)) {
+		/* This is the last (CFS/Recover jobs are not marked with
+		 * original_cpu) migrated job; migrate task back, except when
+		 * destroy_first_job() is called from exit_atlas(), which is
+		 * detected by the ATLAS_EXIT flag.
+		 * TODO: migrate more jobs here?
+		 */
+		struct task_struct *task = job->tsk;
+		struct migration_arg arg = {task, job->original_cpu};
+		struct cpumask new_mask;
+
+		atlas_debug(PARTITION, "Removing remote " JOB_FMT,
+			    JOB_ARG(job));
+
+		cpumask_clear(&new_mask);
+		cpumask_set_cpu(job->original_cpu, &new_mask);
+		cpumask_copy(&task->cpus_allowed, &new_mask);
+		task->nr_cpus_allowed = cpumask_weight(&new_mask);
+		/* Need help from migration thread: drop lock and wait. */
+		set_bit(ATLAS_MIGRATE_NO_JOBS, &task->atlas.flags);
+		stop_one_cpu(task_cpu(task), migration_cpu_stop, &arg);
+		tlb_migrate_finish(task->mm);
+		clear_bit(ATLAS_MIGRATE_NO_JOBS, &task->atlas.flags);
+
+		job->original_cpu = -1;
 	}
 
 	{
