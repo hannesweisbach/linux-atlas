@@ -164,10 +164,11 @@ static ktime_t rq_load(const struct atlas_rq const *atlas_rq)
 
 static ktime_t rq_load_locked(struct atlas_rq *atlas_rq)
 {
+	unsigned long flags;
 	ktime_t load;
-	raw_spin_lock(&atlas_rq->lock);
+	raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 	load = rq_load(atlas_rq);
-	raw_spin_unlock(&atlas_rq->lock);
+	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 	return load;
 }
 
