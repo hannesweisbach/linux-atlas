@@ -142,6 +142,12 @@ static inline bool job_missed_deadline(struct atlas_job *s, ktime_t now)
 	return ktime_compare(s->sdeadline, now) <= 0;
 }
 
+static bool task_on_this_rq(const struct atlas_job const *job)
+{
+	BUG_ON(job->tree->rq != this_rq());
+	return task_rq(job->tsk) == job->tree->rq;
+}
+
 static inline ktime_t
 remaining_execution_time(const struct atlas_job const *job)
 {
@@ -948,8 +954,9 @@ static bool job_runnable(struct atlas_job *job)
 	/* A job is runnable if its task is not blocked and the task is queued
 	 * on this CPU/RQ (might have been pulled)
 	 */
-	return task_on_rq_queued(job->tsk) &&
-	       (task_rq(job->tsk) == job->tree->rq);
+	WARN(!task_on_rq_queued(job->tsk) && !task_on_this_rq(job),
+	     JOB_FMT " not runnable and on different RQ.", JOB_ARG(job));
+	return task_on_rq_queued(job->tsk) && task_on_this_rq(job);
 }
 
 static struct atlas_job *select_job(struct atlas_job_tree *tree)
@@ -962,7 +969,7 @@ static struct atlas_job *select_job(struct atlas_job_tree *tree)
 	for (job = pick_first_job(tree); job && !job_runnable(job);
 	     job = pick_next_job(job)) {
 		struct task_struct *tsk = job->tsk;
-		if (!task_on_rq_queued(tsk)) {
+		if (!task_on_rq_queued(tsk) && task_on_this_rq(job)) {
 			atlas_debug(PICK_NEXT_TASK, "Task %s/%d blocked",
 				    tsk->comm, task_tid(tsk));
 			/* Pull the task to ATLAS, to see the wakup event.
