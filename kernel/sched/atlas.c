@@ -1386,9 +1386,7 @@ static void set_curr_task_atlas(struct rq *rq)
 
 static void task_tick_atlas(struct rq *rq, struct task_struct *p, int queued)
 {
-	// revolution
-	// update_curr_atlas(rq);
-	return;
+	update_curr_atlas(rq);
 }
 
 static void move_all_jobs(struct task_struct *p, struct atlas_rq *to)
