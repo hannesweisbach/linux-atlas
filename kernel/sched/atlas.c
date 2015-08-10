@@ -1731,6 +1731,61 @@ static void destroy_first_job(struct task_struct *tsk)
 		    JOB_ARG(job), ktime_to_ms(ktime_get()),
 		    sched_name(current->policy), job_rq_name(job));
 
+	if (job->original_cpu != -1 &&
+	    !test_bit(ATLAS_EXIT, &job->tsk->atlas.flags)) {
+		/* This is the last (CFS/Recover jobs are not marked with
+		 * original_cpu) migrated job; migrate task back, except when
+		 * destroy_first_job() is called from exit_atlas(), which is
+		 * detected by the ATLAS_EXIT flag.
+		 * TODO: migrate more jobs here?
+		 */
+		unsigned long flags;
+		struct task_struct *task = job->tsk;
+		struct rq *rq = task_rq_lock(task, &flags);
+		struct atlas_rq *atlas_rq = &rq->atlas;
+		struct atlas_rq *other_rq = &cpu_rq(job->original_cpu)->atlas;
+		struct atlas_job *next_job;
+
+		BUG_ON(job->original_cpu == smp_processor_id());
+
+		double_raw_lock(&atlas_rq->lock, &other_rq->lock);
+
+		atlas_debug(PARTITION, "Removing remote " JOB_FMT,
+			    JOB_ARG(job));
+
+		next_job = list_next_entry(job, list);
+		if (next_job != NULL) {
+			atlas_debug(PARTITION, "Migrating " JOB_FMT,
+				    JOB_ARG(next_job));
+			migrate_job(next_job, &this_rq()->atlas);
+			raw_spin_unlock(&other_rq->lock);
+			raw_spin_unlock(&atlas_rq->lock);
+			task_rq_unlock(rq, task, &flags);
+		} else {
+			struct migration_arg arg = {task, job->original_cpu};
+			struct cpumask new_mask;
+			cpumask_clear(&new_mask);
+			cpumask_set_cpu(job->original_cpu, &new_mask);
+			cpumask_copy(&task->cpus_allowed, &new_mask);
+			task->nr_cpus_allowed = cpumask_weight(&new_mask);
+			/* Need help from migration thread: drop lock and wait.
+			 */
+			raw_spin_unlock(&other_rq->lock);
+			raw_spin_unlock(&atlas_rq->lock);
+			task_rq_unlock(rq, task, &flags);
+			atlas_debug(PARTITION, "Migrating task %s/%d from CPU "
+					       "%d to CPU %d",
+				    task->comm, task_tid(task),
+				    smp_processor_id(), job->original_cpu);
+			set_bit(ATLAS_MIGRATE_NO_JOBS, &task->atlas.flags);
+			stop_one_cpu(task_cpu(task), migration_cpu_stop, &arg);
+			tlb_migrate_finish(task->mm);
+			clear_bit(ATLAS_MIGRATE_NO_JOBS, &task->atlas.flags);
+		}
+
+		job->original_cpu = -1;
+	}
+
 	if (job_in_rq(job)) {
 		unsigned long flags;
 		struct rq *rq = task_rq_lock(tsk, &flags);
@@ -1748,34 +1803,6 @@ static void destroy_first_job(struct task_struct *tsk)
 		remove_job_from_tree(job);
 		raw_spin_unlock(atlas_lock);
 		task_rq_unlock(rq, tsk, &flags);
-	}
-
-	if (job->original_cpu != -1 &&
-	    !test_bit(ATLAS_EXIT, &job->tsk->atlas.flags)) {
-		/* This is the last (CFS/Recover jobs are not marked with
-		 * original_cpu) migrated job; migrate task back, except when
-		 * destroy_first_job() is called from exit_atlas(), which is
-		 * detected by the ATLAS_EXIT flag.
-		 * TODO: migrate more jobs here?
-		 */
-		struct task_struct *task = job->tsk;
-		struct migration_arg arg = {task, job->original_cpu};
-		struct cpumask new_mask;
-
-		atlas_debug(PARTITION, "Removing remote " JOB_FMT,
-			    JOB_ARG(job));
-
-		cpumask_clear(&new_mask);
-		cpumask_set_cpu(job->original_cpu, &new_mask);
-		cpumask_copy(&task->cpus_allowed, &new_mask);
-		task->nr_cpus_allowed = cpumask_weight(&new_mask);
-		/* Need help from migration thread: drop lock and wait. */
-		set_bit(ATLAS_MIGRATE_NO_JOBS, &task->atlas.flags);
-		stop_one_cpu(task_cpu(task), migration_cpu_stop, &arg);
-		tlb_migrate_finish(task->mm);
-		clear_bit(ATLAS_MIGRATE_NO_JOBS, &task->atlas.flags);
-
-		job->original_cpu = -1;
 	}
 
 	{
