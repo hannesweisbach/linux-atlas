@@ -571,11 +571,11 @@ static bool can_migrate_task(struct atlas_job *job, int new_cpu)
 	return true;
 }
 
-static bool idle_balance(void)
+static struct task_struct *idle_balance(void)
 {
 	int cpu;
 	const int this_cpu = smp_processor_id();
-	bool migrated = false;
+	struct task_struct *migrated_task = NULL;
 	struct atlas_rq *this_rq = &cpu_rq(this_cpu)->atlas;
 	struct atlas_rq *atlas_rqs[num_possible_cpus()];
 
@@ -598,7 +598,6 @@ static bool idle_balance(void)
 		unsigned long flags;
 		struct atlas_rq *atlas_rq = atlas_rqs[cpu];
 		struct atlas_job *job;
-		struct task_struct *migrated_task = NULL;
 
 		/* Skip this RQ */
 		if (rq_of(atlas_rq) == cpu_rq(this_cpu))
@@ -618,7 +617,6 @@ static bool idle_balance(void)
 					    JOB_ARG(job));
 				migrate_job(job, this_rq);
 				migrated_task = job->tsk;
-				migrated = true;
 				break;
 			}
 		}
@@ -640,11 +638,11 @@ static bool idle_balance(void)
 		preempt_enable();
 		local_irq_restore(flags);
 
-		if (migrated)
+		if (migrated_task != NULL)
 			break;
 	}
 
-	return migrated;
+	return migrated_task;
 }
 
 /*
