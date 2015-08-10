@@ -1827,21 +1827,10 @@ SYSCALL_DEFINE0(atlas_next)
 		goto out_timer;
 
 	{
-		bool no_jobs;
 		rq = task_rq_lock(current, &flags);
-		atlas_rq = &rq->atlas;
-
 		atlas_set_scheduler(rq, current, SCHED_NORMAL);
-
-		no_jobs = has_no_jobs(&atlas_rq->jobs[ATLAS]);
 		task_rq_unlock(rq, current, &flags);
 		rq = NULL;
-		atlas_rq = NULL;
-
-		/*lock hole, need to disable IRQs here */
-
-		if (no_jobs && sysctl_sched_atlas_migrate)
-			idle_balance();
 	}
 
 	set_bit(ATLAS_BLOCKED, &se->flags);
