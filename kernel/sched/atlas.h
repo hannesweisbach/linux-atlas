@@ -50,4 +50,9 @@ struct atlas_rq {
 
 void set_task_rq_atlas(struct task_struct *p, int next_cpu);
 
+static inline bool task_has_jobs(struct task_struct *p)
+{
+	return !list_empty(&p->atlas.jobs);
+}
+
 #endif /* _SCHED_ATLAS_INTERNAL_H */
