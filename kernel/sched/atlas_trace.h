@@ -47,19 +47,25 @@ DECLARE_EVENT_CLASS(atlas_job_template,
 
 DEFINE_EVENT(atlas_job_template, atlas_job_submit,
 	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
-DEFINE_EVENT(atlas_job_template, atlas_job_start,
-	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
 DEFINE_EVENT(atlas_job_template, atlas_job_done,
 	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
-DEFINE_EVENT(atlas_job_template, atlas_job_missed,
-	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
-DEFINE_EVENT(atlas_job_template, atlas_job_select,
-	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
+
 DEFINE_EVENT(atlas_job_template, atlas_job_update,
 	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
 DEFINE_EVENT(atlas_job_template, atlas_job_updated,
 	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
 DEFINE_EVENT(atlas_job_template, atlas_job_remove,
+	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
+
+DEFINE_EVENT(atlas_job_template, atlas_job_start,
+	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
+DEFINE_EVENT(atlas_job_template, atlas_job_missed,
+	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
+DEFINE_EVENT(atlas_job_template, atlas_job_select,
+	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
+DEFINE_EVENT(atlas_job_template, atlas_job_deselect,
+	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
+DEFINE_EVENT(atlas_job_template, atlas_job_slack,
 	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
 
 #endif /* _TRACE_ATLAS_H */

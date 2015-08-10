@@ -1288,6 +1288,9 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		atlas_set_scheduler(rq, atlas_job->tsk, SCHED_ATLAS);
 	}
 
+#ifdef CONFIG_ATLAS_TRACE
+	trace_atlas_job_slack(atlas_job);
+#endif
 	start_slack_timer(atlas_rq, atlas_job, slack);
 
 out_notask:
@@ -1360,6 +1363,11 @@ static void put_prev_task_atlas(struct rq *rq, struct task_struct *prev)
 		update_curr_atlas(rq);
 		update_stats_wait_start(rq, &prev->se);
 	}
+
+#ifdef CONFIG_ATLAS_TRACE
+	if (prev->atlas.job != NULL)
+		trace_atlas_job_deselect(prev->atlas.job);
+#endif
 
 	prev->atlas.job = NULL;
 	atlas_rq->curr = NULL;
@@ -1677,7 +1685,7 @@ static void destroy_first_job(struct task_struct *tsk)
 	BUG_ON(!job);
 
 #ifdef CONFIG_ATLAS_TRACE
-	trace_atlas_job_remove(job);
+	trace_atlas_job_done(job);
 #endif
 	atlas_debug(SYS_NEXT, "Finished " JOB_FMT " at "
 			      "%lld under %s (%s)",
