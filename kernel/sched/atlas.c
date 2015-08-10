@@ -501,20 +501,20 @@ static bool has_migrated_job(struct task_struct *task)
  */
 static void migrate_job(struct atlas_job *job, struct atlas_rq *to)
 {
+	unsigned long flags;
 	struct atlas_job *j;
 	struct sched_atlas_entity *atlas_se = &job->tsk->atlas;
 
-	spin_lock(&atlas_se->jobs_lock);
+	spin_lock_irqsave(&atlas_se->jobs_lock, flags);
 	list_for_each_entry(j, &atlas_se->jobs, list)
 	{
 		if (!is_atlas_job(j)) {
 			move_job_between_rqs(j, to);
 		}
 	}
-	spin_unlock(&atlas_se->jobs_lock);
-
 	move_job_between_rqs(job, to);
 	job->original_cpu = task_cpu(job->tsk);
+	spin_unlock_irqrestore(&atlas_se->jobs_lock, flags);
 }
 
 /* almost verbatim from fair.c */
