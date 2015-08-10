@@ -1409,7 +1409,7 @@ static void switched_from_atlas(struct rq *rq, struct task_struct *p)
 	p->atlas.last_cpu = task_cpu(p);
 #ifndef ATLAS_MIGRATE_IN_CFS
 	p->atlas.last_mask = p->cpus_allowed;
-	if (!list_empty(&p->atlas.jobs)) {
+	if (task_has_jobs(p)) {
 		cpumask_t mask;
 		cpumask_clear(&mask);
 		cpumask_set_cpu(p->atlas.last_cpu, &mask);
@@ -1514,7 +1514,7 @@ void exit_atlas(struct task_struct *p)
 	unsigned long flags;
 	struct rq *const rq = task_rq_lock(p, &flags);
 	struct atlas_rq *const atlas_rq = &rq->atlas;
-	const bool atlas_task = !list_empty(&p->atlas.jobs);
+	const bool atlas_task = task_has_jobs(p);
 
 	BUG_ON(in_interrupt());
 	BUG_ON(p->policy == SCHED_ATLAS &&
@@ -1539,7 +1539,7 @@ void exit_atlas(struct task_struct *p)
 
 	set_bit(ATLAS_EXIT, &p->atlas.flags);
 
-	for (; !list_empty(&p->atlas.jobs);)
+	for (; task_has_jobs(p);)
 		destroy_first_job(p);
 
 	if (atlas_task) {
@@ -1629,7 +1629,7 @@ static void schedule_job(struct atlas_job *const job)
 	{
 		spin_lock(&se->jobs_lock);
 
-		wakeup = list_empty(&se->jobs) &&
+		wakeup = !task_has_jobs(job->tsk) &&
 			 test_bit(ATLAS_BLOCKED, &se->flags);
 		/* in submission order. */
 		list_add_tail(&job->list, &se->jobs);
@@ -2044,7 +2044,7 @@ SYSCALL_DEFINE2(atlas_remove, pid_t, pid, uint64_t, id)
 		ret = -EINVAL;
 	}
 
-	if (list_empty(&tsk->atlas.jobs) && tsk->policy == SCHED_ATLAS) {
+	if (!task_has_jobs(tsk) && tsk->policy == SCHED_ATLAS) {
 		struct rq *rq = task_rq_lock(tsk, &flags);
 		atlas_set_scheduler(rq, tsk, SCHED_NORMAL);
 		task_rq_unlock(rq, tsk, &flags);
