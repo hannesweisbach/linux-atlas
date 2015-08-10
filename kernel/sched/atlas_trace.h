@@ -68,6 +68,28 @@ DEFINE_EVENT(atlas_job_template, atlas_job_deselect,
 DEFINE_EVENT(atlas_job_template, atlas_job_slack,
 	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
 
+DECLARE_EVENT_CLASS(atlas_task_template,
+	TP_PROTO(struct task_struct * p),
+	TP_ARGS(p),
+	TP_STRUCT__entry(
+		__array(char,	comm, TASK_COMM_LEN)
+		__field(pid_t,	tid                )
+		__field(int,	task_policy        )
+	),
+	TP_fast_assign(
+		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
+		__entry->tid         = task_pid_nr_ns(p, task_active_pid_ns(p));
+		__entry->task_policy = p->policy;
+	),
+	TP_printk("%16s/%5d/%d",
+	          __entry->comm, __entry->tid, __entry->task_policy)
+);
+
+DEFINE_EVENT(atlas_task_template, atlas_task_sleep,
+	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
+DEFINE_EVENT(atlas_task_template, atlas_task_wakeup,
+	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
+
 #endif /* _TRACE_ATLAS_H */
 
 /* This part must be outside protection */
