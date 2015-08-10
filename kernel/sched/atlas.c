@@ -487,8 +487,10 @@ static bool has_migrated_job(struct task_struct *task)
 
 	list_for_each_entry(j, &task->atlas.jobs, list)
 	{
-		if (j->original_cpu != -1)
+		if ((j->original_cpu != -1) &&
+		    task_cpu(j->tsk) != smp_processor_id()) {
 			return true;
+		}
 	}
 
 	return false;
