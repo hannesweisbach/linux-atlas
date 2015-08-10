@@ -15,6 +15,7 @@ DECLARE_EVENT_CLASS(atlas_job_template,
 		__field(pid_t,	tid                )
 		__field(int,	task_policy        )
 		__field(int,	job_policy         )
+		__field(u64,	id                 )
 		__field(s64,	now                )
 		__field(s64,	sbegin             )
 		__field(s64,	sdeadline          )
@@ -28,6 +29,7 @@ DECLARE_EVENT_CLASS(atlas_job_template,
 		__entry->tid         = task_pid_nr_ns(j->tsk, task_active_pid_ns(j->tsk));
 		__entry->task_policy = j->tsk->policy;
 		__entry->job_policy  = j->tree - j->tree->rq->atlas.jobs;
+		__entry->id          = j->id;
 		__entry->now         = ktime_to_ns(ktime_get());
 		__entry->sbegin      = ktime_to_ns(ktime_sub(j->deadline, ktime_sub(j->sexectime, j->rexectime)));
 		__entry->sdeadline   = ktime_to_ns(j->sdeadline);
@@ -36,9 +38,9 @@ DECLARE_EVENT_CLASS(atlas_job_template,
 		__entry->sexectime   = ktime_to_ns(j->sexectime);
 		__entry->exectime    = ktime_to_ns(j->exectime);
 	),
-	TP_printk("%16s/%5d/%d/%d %6lld %6lld-%6lld (%lld) (%lld of %lld/%lld",
+	TP_printk("%16s/%5d/%d/%d %llu %6lld %6lld-%6lld (%lld) (%lld of %lld/%lld",
 	          __entry->comm, __entry->tid, __entry->task_policy,
-		  __entry->job_policy,__entry->now, __entry->sbegin,
+		  __entry->job_policy, __entry->id, __entry->now, __entry->sbegin,
 		  __entry->sdeadline, __entry->deadline, __entry->rexectime,
 		  __entry->sexectime, __entry->exectime)
 );
