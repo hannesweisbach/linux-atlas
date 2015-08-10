@@ -510,10 +510,12 @@ static void migrate_job(struct atlas_job *job, struct atlas_rq *to)
 	{
 		if (j != job) {
 			move_job_between_rqs(j, to);
+		} else {
+			job->original_cpu = cpu_of(job->tree->rq);
+			move_job_between_rqs(job, to);
+			break;
 		}
 	}
-	move_job_between_rqs(job, to);
-	job->original_cpu = task_cpu(job->tsk);
 	spin_unlock_irqrestore(&atlas_se->jobs_lock, flags);
 }
 
