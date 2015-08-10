@@ -1535,6 +1535,29 @@ static void migrate_task_rq_atlas(struct task_struct *p, int next_cpu)
 	cpumask_set_cpu(next_cpu, &p->cpus_allowed);
 }
 
+static void set_cpus_allowed_atlas(struct task_struct *p,
+				   const struct cpumask *new_mask)
+{
+	atlas_debug(PARTITION, "Updating CPU mask from %*pb to %*pb",
+		    cpumask_pr_args(&p->atlas.last_mask),
+		    cpumask_pr_args(new_mask));
+	cpumask_copy(&p->atlas.last_mask, new_mask);
+	// TODO if task_cpu and new_mask do not intersect, migrate.
+	// Maybe not such a good idea.
+	// TODO if task_cpu and new_mask do not intersect, promote to
+	// ATLAS, so ATLAS can see the migration.
+	if (p->policy != SCHED_ATLAS &&
+	    !cpumask_test_cpu(task_cpu(p), new_mask)) {
+		unsigned long flags;
+		struct rq *rq = task_rq_lock(p, &flags);
+		atlas_set_scheduler(rq, p, SCHED_ATLAS);
+		task_rq_unlock(rq, p, &flags);
+		atlas_debug(PARTITION,
+			    "Promoting %s/%d to ATLAS to see migration to %*pb",
+			    p->comm, task_tid(p), cpumask_pr_args(new_mask));
+	}
+}
+
 void set_task_rq_atlas(struct task_struct *p, int next_cpu)
 {
 	if (task_cpu(p) != next_cpu)
@@ -1620,7 +1643,7 @@ const struct sched_class atlas_sched_class = {
 	//.task_waking        = task_waking_atlas,
 	//.task_woken         = task_work_atlas,
 
-	//.set_cpus_allowed   = set_cpus_allowed_atlas,
+	.set_cpus_allowed   = set_cpus_allowed_atlas,
 
 	//.rq_online          = rq_online_atlas,
 	//.rq_offline         = rq_offline_atlas,
