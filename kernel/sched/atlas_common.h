@@ -127,7 +127,7 @@ extern void sched_log(const char *fmt, ...);
 			(rq->atlas.timer_target == ATLAS_SLACK) ? " (slack)"   \
 								: ""
 
-#define JOB_FMT "Job %s/%d/%lld (e: %lld/%lld/%lld, d: %lld/%lld, %s)"
+#define JOB_FMT "Job %s/%d/%lld (e: %lld/%lld/%lld, d: %lld/%lld, %s %d)"
 #define JOB_ARG(job)                                                           \
 	(job) ? (job)->tsk->comm : "(none)", (job) ? task_tid(job->tsk) : 0,   \
 			(job) ? job->id : -1,                                  \
@@ -136,7 +136,7 @@ extern void sched_log(const char *fmt, ...);
 			(job) ? ktime_to_ms((job)->exectime) : -1,             \
 			(job) ? ktime_to_ms((job)->sdeadline) : -1,            \
 			(job) ? ktime_to_ms((job)->deadline) : -1,             \
-			job_rq_name(job)
+			job_rq_name(job), job->original_cpu
 
 #define atlas_debug_(flag, fmt, ...)                                           \
 	do {                                                                   \
