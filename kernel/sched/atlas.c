@@ -508,7 +508,7 @@ static void migrate_job(struct atlas_job *job, struct atlas_rq *to)
 	spin_lock_irqsave(&atlas_se->jobs_lock, flags);
 	list_for_each_entry(j, &atlas_se->jobs, list)
 	{
-		if (!is_atlas_job(j)) {
+		if (j != job) {
 			move_job_between_rqs(j, to);
 		}
 	}
