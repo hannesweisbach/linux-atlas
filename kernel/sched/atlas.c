@@ -645,6 +645,24 @@ static struct task_struct *idle_balance(void)
 	return migrated_task;
 }
 
+static struct task_struct *idle_balance_locked(void)
+{
+	struct rq *rq = this_rq();
+	int nr_running = rq->nr_running;
+	struct task_struct *new_task;
+
+	BUG_ON(!irqs_disabled());
+
+	raw_spin_unlock(&rq->lock);
+	new_task = idle_balance();
+	raw_spin_lock(&rq->lock);
+
+	if (new_task && (nr_running + 1) != rq->nr_running)
+		new_task = RETRY_TASK;
+
+	return new_task;
+}
+
 /*
  **********************************************************
  ***                 timer stuff                        ***
@@ -1221,8 +1239,13 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 
 	if (has_no_jobs(&atlas_rq->jobs[ATLAS]) &&
 	    has_no_jobs(&atlas_rq->jobs[RECOVER]) &&
-	    has_no_jobs(&atlas_rq->jobs[CFS]))
-		return NULL;
+	    has_no_jobs(&atlas_rq->jobs[CFS])) {
+		if (sysctl_sched_atlas_migrate)
+		  /* TODO: idle balance hold-off */
+			return idle_balance_locked();
+		else
+			return NULL;
+	}
 
 	handle_deadline_misses(atlas_rq);
 
@@ -1324,6 +1347,10 @@ out_notask:
 	atlas_debug(PICK_NEXT_TASK, "No ATLAS job ready. (%d/%d/%d)",
 		    rq->nr_running, atlas_rq->jobs[ATLAS].nr_running,
 		    atlas_rq->jobs[RECOVER].nr_running);
+
+	if (!has_jobs(&atlas_rq->jobs[CFS]) && sysctl_sched_atlas_migrate)
+		return idle_balance_locked();
+
 	return NULL;
 
 out_task:
