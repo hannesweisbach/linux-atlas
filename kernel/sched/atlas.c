@@ -1041,6 +1041,9 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 			inc_nr_running(&atlas_rq->jobs[ATLAS]);
 		if (has_jobs(&atlas_rq->jobs[RECOVER]))
 			inc_nr_running(&atlas_rq->jobs[RECOVER]);
+#ifdef CONFIG_ATLAS_TRACE
+		trace_atlas_task_wakeup(p);
+#endif
 	}
 
 	atlas_debug(ENQUEUE, JOB_FMT "%s%s (%d/%d)", JOB_ARG(atlas_rq->curr),
@@ -1066,6 +1069,11 @@ static void dequeue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 		atlas_rq->curr = NULL;
 	else
 		update_stats_wait_end(rq, &p->se);
+
+#ifdef CONFIG_ATLAS_TRACE
+	if (flags & DEQUEUE_SLEEP)
+		trace_atlas_task_sleep(p);
+#endif
 
 	se->on_rq = 0;
 
