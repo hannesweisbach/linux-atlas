@@ -1531,6 +1531,8 @@ static void migrate_task_rq_atlas(struct task_struct *p, int next_cpu)
 	raw_spin_unlock(&prev_rq->lock);
 	raw_spin_unlock(&next_rq->lock);
 
+	cpumask_clear(&p->cpus_allowed);
+	cpumask_set_cpu(next_cpu, &p->cpus_allowed);
 }
 
 void set_task_rq_atlas(struct task_struct *p, int next_cpu)
