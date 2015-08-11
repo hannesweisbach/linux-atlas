@@ -56,6 +56,10 @@ DEFINE_EVENT(atlas_job_template, atlas_job_updated,
 	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
 DEFINE_EVENT(atlas_job_template, atlas_job_remove,
 	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
+DEFINE_EVENT(atlas_job_template, atlas_job_migrate,
+	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
+DEFINE_EVENT(atlas_job_template, atlas_job_migrated,
+	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
 
 DEFINE_EVENT(atlas_job_template, atlas_job_start,
 	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));

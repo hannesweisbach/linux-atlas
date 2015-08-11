@@ -458,8 +458,14 @@ static void move_job_between_rqs(struct atlas_job *job, struct atlas_rq *to)
 	BUG_ON(entry >= NR_CLASSES);
 	BUG_ON(entry < 0);
 
+#ifdef SCHED_ATLAS_TRACE
+	trace_atlas_job_migrate(job);
+#endif
 	remove_job_from_tree(job);
 	insert_job_into_tree(dst, job);
+#ifdef SCHED_ATLAS_TRACE
+	trace_atlas_job_migrated(job);
+#endif
 }
 
 static int atlas_rq_cmp(const void *lhs, const void *rhs)
