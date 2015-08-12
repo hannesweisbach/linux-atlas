@@ -159,6 +159,158 @@ remaining_execution_time(const struct atlas_job const *job)
 	return ktime_sub(job->sexectime, job->rexectime);
 }
 
+static ktime_t task_dbf(struct task_struct *task, const ktime_t t)
+{
+	unsigned long flags;
+	ktime_t demand = ktime_set(0, 0);
+	struct atlas_job *job;
+
+	spin_lock_irqsave(&task->atlas.jobs_lock, flags);
+	/* CFS jobs have depleted their execution time, so the notion of
+	 * 'demand' as in
+	 *   demand = requested execution time - received execution time
+	 * bears no meaning for them.
+	 */
+	list_for_each_entry(job, &task->atlas.jobs, list)
+	{
+		if (ktime_compare(job->deadline, t) > 0)
+			break;
+		if (!is_cfs_job(job)) {
+			ktime_t job_demand = ktime_sub(job->exectime,
+						       job->rexectime);
+			demand = ktime_add(demand, job_demand);
+		}
+	}
+	spin_unlock_irqrestore(&task->atlas.jobs_lock, flags);
+
+	return demand;
+}
+
+static ktime_t rq_dbf(struct atlas_rq *atlas_rq, const ktime_t t)
+{
+	enum atlas_classes class;
+	ktime_t demand = ktime_set(0, 0);
+
+	/* CFS jobs have depleted their execution time, so the notion of
+	 * 'demand' as in
+	 *   demand = requested execution time - received execution time
+	 * bears no meaning for them.
+	 */
+	for (class = ATLAS; class < RECOVER; ++class) {
+		struct atlas_job *job;
+		for_each_job(job, &atlas_rq->jobs[class])
+		{
+			if (ktime_compare(job->deadline, t) < 0) {
+				ktime_t job_demand = ktime_sub(job->exectime,
+							       job->rexectime);
+				demand = ktime_add(demand, job_demand);
+			} else {
+				break;
+			}
+		}
+	}
+
+	return demand;
+}
+
+static ktime_t min_rq_horizon(void)
+{
+	int cpu;
+	ktime_t minmax = ktime_set(KTIME_SEC_MAX, 0);
+
+	for_each_possible_cpu(cpu)
+	{
+		ktime_t max = minmax;
+		unsigned long flags;
+		struct atlas_rq *atlas_rq = &cpu_rq(cpu)->atlas;
+		struct atlas_job *last;
+
+		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+		last = pick_last_job(&atlas_rq->jobs[ATLAS]);
+		if (last != NULL)
+			max = last->deadline;
+		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+
+		if (ktime_compare(max, minmax) < 0)
+			minmax = max;
+	}
+
+	return minmax;
+}
+
+static int first_fit_rq(struct task_struct *task)
+{
+	int cpu;
+	int min_cpu = -1;
+	const ktime_t now = ktime_get();
+	const ktime_t t = min_rq_horizon();
+	const ktime_t delta = ktime_sub(t, now);
+	ktime_t task_demand = task_dbf(task, t);
+	ktime_t min_demand = ktime_set(KTIME_SEC_MAX, 0);
+
+	/* t better be in the future */
+	BUG_ON(ktime_before(t, now));
+
+	for_each_cpu(cpu, &task->atlas.last_mask)
+	{
+		ktime_t demand;
+		ktime_t free;
+		unsigned long flags;
+		struct atlas_rq *atlas_rq = &cpu_rq(cpu)->atlas;
+
+		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+		demand = rq_dbf(atlas_rq, t);
+		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+
+		free = ktime_sub(delta, demand);
+		if (ktime_compare(task_demand, free) <= 0)
+			return cpu;
+
+		if (ktime_compare(demand, min_demand) < 0) {
+			min_demand = demand;
+			min_cpu = cpu;
+		}
+	}
+
+	/* If there was no fit, use the CPU with minimum load */
+
+	BUG_ON(!cpu_possible(min_cpu));
+
+	return min_cpu;
+}
+
+static int worst_fit_rq(struct task_struct *task)
+{
+	int min_cpu = -1;
+	int cpu;
+	const ktime_t now = ktime_get();
+	const ktime_t t = min_rq_horizon();
+	ktime_t min_demand = ktime_set(KTIME_SEC_MAX, 0);
+
+	/* t better be in the future */
+	BUG_ON(ktime_before(t, now));
+
+	for_each_cpu(cpu, &task->atlas.last_mask)
+	{
+		unsigned long flags;
+		struct atlas_rq *atlas_rq = &cpu_rq(cpu)->atlas;
+		ktime_t demand;
+
+		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+		demand = rq_dbf(atlas_rq, t);
+		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+
+		if (ktime_compare(demand, min_demand) < 0) {
+			min_demand = demand;
+			min_cpu = cpu;
+		}
+	}
+
+	BUG_ON(!cpu_possible(min_cpu));
+
+	return min_cpu;
+}
+
 static ktime_t rq_load(const struct atlas_rq const *atlas_rq)
 {
 	const struct atlas_job const *j =
@@ -1498,11 +1650,44 @@ static unsigned int get_rr_interval_atlas(struct rq *rq, struct task_struct *tas
 static int select_task_rq_atlas(struct task_struct *p, int prev_cpu,
 				int sd_flag, int flags)
 {
-	atlas_debug(PARTITION, "CPU for Task %s/%d", p->comm, task_tid(p));
 #if 0
+	atlas_debug(PARTITION, "CPU for Task %s/%d", p->comm, task_tid(p));
 	return task_cpu(p);
 #else
-	return task_cpu(p) + 1 % num_possible_cpus();
+	struct rq *rq;
+	struct atlas_rq *atlas_rq;
+	int cpu;
+	bool migrated;
+	bool overloaded;
+
+	rq = task_rq(p);
+	atlas_rq = &rq->atlas;
+	raw_spin_lock(&atlas_rq->lock);
+	migrated = has_migrated_job(p);
+	overloaded = rq_overloaded(atlas_rq);
+	raw_spin_unlock(&atlas_rq->lock);
+
+	/* otherwise job->original_cpu is not true anymore. Maybe it's possible
+	 * to update job->original_cpu, but locking is gonna be a bitch.
+	 * original_cpu atomic?
+	 */
+	if (migrated) {
+		BUG_ON(cpumask_test_cpu(prev_cpu, tsk_cpus_allowed(p)));
+		return prev_cpu;
+	}
+
+	if (!overloaded)
+		return prev_cpu;
+
+	cpu = worst_fit_rq(p);
+
+	atlas_debug(PARTITION, "CPU for Task %s/%d: %d", p->comm, task_tid(p),
+		    cpu);
+
+	cpumask_clear(&p->cpus_allowed);
+	cpumask_set_cpu(cpu, &p->cpus_allowed);
+
+	return cpu;
 #endif
 }
 
