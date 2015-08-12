@@ -39,6 +39,7 @@ const struct sched_class atlas_sched_class;
 unsigned int sysctl_sched_atlas_min_slack      = 1000000ULL;
 unsigned int sysctl_sched_atlas_advance_in_cfs = 0;
 unsigned int sysctl_sched_atlas_idle_job_stealing = 0;
+unsigned int sysctl_sched_atlas_wakeup_balancing = 0;
 
 static inline void inc_nr_running(struct atlas_job_tree *tree)
 {
@@ -1653,45 +1654,46 @@ static unsigned int get_rr_interval_atlas(struct rq *rq, struct task_struct *tas
 static int select_task_rq_atlas(struct task_struct *p, int prev_cpu,
 				int sd_flag, int flags)
 {
-#if 0
-	atlas_debug(PARTITION, "CPU for Task %s/%d", p->comm, task_tid(p));
-	return task_cpu(p);
-#else
-	struct rq *rq;
-	struct atlas_rq *atlas_rq;
-	int cpu;
-	bool migrated;
-	bool overloaded;
+	if (sysctl_sched_atlas_wakeup_balancing) {
+		struct rq *rq;
+		struct atlas_rq *atlas_rq;
+		int cpu;
+		bool migrated;
+		bool overloaded;
 
-	rq = task_rq(p);
-	atlas_rq = &rq->atlas;
-	raw_spin_lock(&atlas_rq->lock);
-	migrated = has_migrated_job(p);
-	overloaded = rq_overloaded(atlas_rq);
-	raw_spin_unlock(&atlas_rq->lock);
+		rq = task_rq(p);
+		atlas_rq = &rq->atlas;
+		raw_spin_lock(&atlas_rq->lock);
+		migrated = has_migrated_job(p);
+		overloaded = rq_overloaded(atlas_rq);
+		raw_spin_unlock(&atlas_rq->lock);
 
-	/* otherwise job->original_cpu is not true anymore. Maybe it's possible
-	 * to update job->original_cpu, but locking is gonna be a bitch.
-	 * original_cpu atomic?
-	 */
-	if (migrated) {
-		BUG_ON(cpumask_test_cpu(prev_cpu, tsk_cpus_allowed(p)));
-		return prev_cpu;
+		/* otherwise job->original_cpu is not true anymore. Maybe it's
+		 * possible
+		 * to update job->original_cpu, but locking is gonna be a bitch.
+		 * original_cpu atomic?
+		 */
+		if (migrated) {
+			BUG_ON(cpumask_test_cpu(prev_cpu, tsk_cpus_allowed(p)));
+			return prev_cpu;
+		}
+
+		if (!overloaded)
+			return prev_cpu;
+
+		cpu = worst_fit_rq(p);
+
+		atlas_debug(PARTITION, "CPU for Task %s/%d: %d", p->comm,
+			    task_tid(p), cpu);
+
+		cpumask_clear(&p->cpus_allowed);
+		cpumask_set_cpu(cpu, &p->cpus_allowed);
+
+		return cpu;
 	}
 
-	if (!overloaded)
-		return prev_cpu;
-
-	cpu = worst_fit_rq(p);
-
-	atlas_debug(PARTITION, "CPU for Task %s/%d: %d", p->comm, task_tid(p),
-		    cpu);
-
-	cpumask_clear(&p->cpus_allowed);
-	cpumask_set_cpu(cpu, &p->cpus_allowed);
-
-	return cpu;
-#endif
+	atlas_debug(PARTITION, "CPU for Task %s/%d", p->comm, task_tid(p));
+	return task_cpu(p);
 }
 
 static void migrate_task_rq_atlas(struct task_struct *p, int next_cpu)
