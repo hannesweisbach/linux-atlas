@@ -38,7 +38,7 @@ const struct sched_class atlas_sched_class;
 
 unsigned int sysctl_sched_atlas_min_slack      = 1000000ULL;
 unsigned int sysctl_sched_atlas_advance_in_cfs = 0;
-unsigned int sysctl_sched_atlas_migrate = 0;
+unsigned int sysctl_sched_atlas_idle_job_stealing = 0;
 
 static inline void inc_nr_running(struct atlas_job_tree *tree)
 {
@@ -1399,7 +1399,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	if (has_no_jobs(&atlas_rq->jobs[ATLAS]) &&
 	    has_no_jobs(&atlas_rq->jobs[RECOVER]) &&
 	    has_no_jobs(&atlas_rq->jobs[CFS])) {
-		if (sysctl_sched_atlas_migrate)
+		if (sysctl_sched_atlas_idle_job_stealing)
 		  /* TODO: idle balance hold-off */
 			return idle_balance_locked();
 		else
@@ -1507,7 +1507,8 @@ out_notask:
 		    rq->nr_running, atlas_rq->jobs[ATLAS].nr_running,
 		    atlas_rq->jobs[RECOVER].nr_running);
 
-	if (!has_jobs(&atlas_rq->jobs[CFS]) && sysctl_sched_atlas_migrate)
+	if (!has_jobs(&atlas_rq->jobs[CFS]) &&
+	    sysctl_sched_atlas_idle_job_stealing)
 		return idle_balance_locked();
 
 	return NULL;
