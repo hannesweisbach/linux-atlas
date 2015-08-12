@@ -2,6 +2,9 @@
 #define _SCHED_ATLAS_INTERNAL_H
 
 #include <linux/spinlock.h>
+#include <linux/ktime.h>
+#include <linux/types.h>
+#include <linux/rbtree.h>
 
 struct atlas_job_tree;
 
