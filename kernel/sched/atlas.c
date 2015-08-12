@@ -40,6 +40,7 @@ unsigned int sysctl_sched_atlas_min_slack      = 1000000ULL;
 unsigned int sysctl_sched_atlas_advance_in_cfs = 0;
 unsigned int sysctl_sched_atlas_idle_job_stealing = 0;
 unsigned int sysctl_sched_atlas_wakeup_balancing = 0;
+unsigned int sysctl_sched_atlas_overload_push = 0;
 
 static inline void inc_nr_running(struct atlas_job_tree *tree)
 {
@@ -1095,6 +1096,15 @@ static void init_tree(struct atlas_job_tree *tree, struct atlas_rq *atlas_rq,
 	snprintf(tree->name, sizeof(tree->name), name);
 }
 
+static void notify_overloaded(void *info)
+{
+	int overloaded_cpu = (int)(long)info;
+	struct rq *this_rq = this_rq();
+
+	cpumask_set_cpu(overloaded_cpu, &this_rq->atlas.overloaded_set);
+	cpu_rq(overloaded_cpu)->atlas.overload_csd_pending = 0;
+}
+
 void init_atlas_rq(struct atlas_rq *atlas_rq)
 {
 	printk(KERN_INFO "Initializing ATLAS runqueue on CPU %d\n",
@@ -1117,6 +1127,10 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	atlas_rq->skip_update_curr = 0;
 
 	cpumask_clear(&atlas_rq->overloaded_set);
+	atlas_rq->overload_csd.flags = 0;
+	atlas_rq->overload_csd.func = notify_overloaded;
+	atlas_rq->overload_csd.info = (void *)(long)smp_processor_id();
+	atlas_rq->overload_csd_pending = 0;
 }
 
 static void update_stats_wait_start(struct rq *rq, struct sched_entity *se)
@@ -1422,6 +1436,21 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 			return NULL;
 	}
 
+	if (!sysctl_sched_atlas_overload_push)
+		BUG_ON(!cpumask_empty(&atlas_rq->overloaded_set));
+
+	if (!cpumask_empty(&atlas_rq->overloaded_set)) {
+		int cpu;
+		for_each_cpu(cpu, &atlas_rq->overloaded_set)
+		{
+			cpumask_test_and_clear_cpu(cpu,
+						   &atlas_rq->overloaded_set);
+			raw_spin_unlock(&rq->lock);
+			try_migrate_from_cpu(cpu);
+			raw_spin_lock(&rq->lock);
+		}
+	}
+
 	handle_deadline_misses(atlas_rq);
 
 	if (not_runnable(&atlas_rq->jobs[ATLAS]) &&
@@ -1558,6 +1587,20 @@ out_task:
 	atlas_debug(PICK_NEXT_TASK, JOB_FMT " to run.",
 		    JOB_ARG(atlas_rq->curr));
 
+	/* TODO: do this only if:
+	 * - negative slack for first job
+	 * - there is a following job
+	 * - the gap between 1st and 2nd job is smaller than the slack time +
+	 *   epsilon
+	 *
+	 * Find a run queue *quickly*
+	 */
+	if (sysctl_sched_atlas_overload_push && rq_overloaded(atlas_rq) &&
+	    !atlas_rq->overload_csd_pending) {
+		atlas_rq->overload_csd_pending = 1;
+		smp_call_function_single_async(cpu_of(rq),
+					       &atlas_rq->overload_csd);
+	}
 
 	return atlas_rq->curr->tsk;
 }
