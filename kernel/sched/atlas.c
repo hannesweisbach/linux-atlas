@@ -1099,6 +1099,8 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 
 	atlas_rq->slack_task = NULL;
 	atlas_rq->skip_update_curr = 0;
+
+	cpumask_clear(&atlas_rq->overloaded_set);
 }
 
 static void update_stats_wait_start(struct rq *rq, struct sched_entity *se)
