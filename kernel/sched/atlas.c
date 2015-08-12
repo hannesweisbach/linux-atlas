@@ -488,7 +488,6 @@ static bool has_migrated_job(struct task_struct *task)
 	struct rq *rq = task_rq(task);
 	struct atlas_job *j;
 
-	lockdep_assert_held(&rq->lock);
 	lockdep_assert_held(&rq->atlas.lock);
 
 	list_for_each_entry(j, &task->atlas.jobs, list)
@@ -551,8 +550,8 @@ static bool can_migrate_task(struct atlas_job *job, int new_cpu)
 	struct task_struct *task = job->tsk;
 	struct rq *rq = task_rq(task);
 
-	lockdep_assert_held(&rq->lock);
-	lockdep_assert_held(&rq->atlas.lock);
+	lockdep_assert_held(&job->tree->rq->lock);
+	lockdep_assert_held(&job->tree->rq->atlas.lock);
 
 	if (!cpumask_test_cpu(new_cpu, &task->atlas.last_mask)) {
 		atlas_debug(PARTITION, "Migration to CPU %d failed because of "
