@@ -729,12 +729,62 @@ static bool can_migrate_task(struct atlas_job *job, int new_cpu)
 	return true;
 }
 
+static struct task_struct *try_migrate_from_cpu(const int cpu)
+{
+	const int this_cpu = smp_processor_id();
+	struct task_struct *migrated_task = NULL;
+	struct atlas_rq *this_rq = &this_rq()->atlas;
+	struct atlas_rq *atlas_rq = &cpu_rq(cpu)->atlas;
+	struct atlas_job *job;
+	unsigned long flags;
+
+	local_irq_save(flags);
+	preempt_disable();
+
+	double_rq_lock(rq_of(atlas_rq), rq_of(this_rq));
+	double_raw_lock(&atlas_rq->lock, &this_rq->lock);
+
+	/* finds first job of a task that is not currently running */
+	for_each_job(job, &atlas_rq->jobs[ATLAS])
+	{
+		if (can_migrate_task(job, this_cpu)) {
+			atlas_debug(PARTITION, "LB " JOB_FMT, JOB_ARG(job));
+			migrate_job(job, this_rq);
+			migrated_task = job->tsk;
+			break;
+		}
+	}
+
+	raw_spin_unlock(&atlas_rq->lock);
+	raw_spin_unlock(&this_rq->lock);
+
+	if (migrated_task != NULL && task_cpu(migrated_task) != this_cpu) {
+		ktime_t start, detach_time, attach_time;
+		set_bit(ATLAS_MIGRATE_NO_JOBS, &migrated_task->atlas.flags);
+		start = ktime_get();
+		detach_task(migrated_task, this_cpu);
+		detach_time = ktime_sub(ktime_get(), start);
+		start = ktime_get();
+		attach_task(migrated_task, cpu_rq(this_cpu));
+		attach_time = ktime_sub(ktime_get(), start);
+		clear_bit(ATLAS_MIGRATE_NO_JOBS, &migrated_task->atlas.flags);
+		atlas_debug(PARTITION, "Migration in %lldns %lldns",
+			    ktime_to_ns(detach_time), ktime_to_ns(attach_time));
+	}
+
+	double_rq_unlock(rq_of(atlas_rq), rq_of(this_rq));
+
+	preempt_enable();
+	local_irq_restore(flags);
+
+	return migrated_task;
+}
+
 static struct task_struct *idle_balance(void)
 {
 	int cpu;
 	const int this_cpu = smp_processor_id();
 	struct task_struct *migrated_task = NULL;
-	struct atlas_rq *this_rq = &cpu_rq(this_cpu)->atlas;
 	struct atlas_rq *atlas_rqs[num_possible_cpus()];
 
 	atlas_debug(PARTITION, "Balancing");
@@ -753,48 +803,13 @@ static struct task_struct *idle_balance(void)
 	/* 'cpu' is now just an index */
 	for_each_possible_cpu(cpu)
 	{
-		unsigned long flags;
 		struct atlas_rq *atlas_rq = atlas_rqs[cpu];
-		struct atlas_job *job;
 
 		/* Skip this RQ */
 		if (rq_of(atlas_rq) == cpu_rq(this_cpu))
 			continue;
 
-		local_irq_save(flags);
-		preempt_disable();
-
-		double_rq_lock(rq_of(atlas_rq), rq_of(this_rq));
-		double_raw_lock(&atlas_rq->lock, &this_rq->lock);
-
-		/* finds first job of a task that is not currently running */
-		for_each_job(job, &atlas_rq->jobs[ATLAS])
-		{
-			if (can_migrate_task(job, this_cpu)) {
-				atlas_debug(PARTITION, "LB " JOB_FMT,
-					    JOB_ARG(job));
-				migrate_job(job, this_rq);
-				migrated_task = job->tsk;
-				break;
-			}
-		}
-
-		raw_spin_unlock(&atlas_rq->lock);
-		raw_spin_unlock(&this_rq->lock);
-
-		if (migrated_task != NULL) {
-			set_bit(ATLAS_MIGRATE_NO_JOBS,
-				&migrated_task->atlas.flags);
-			detach_task(migrated_task, this_cpu);
-			attach_task(migrated_task, cpu_rq(this_cpu));
-			clear_bit(ATLAS_MIGRATE_NO_JOBS,
-				  &migrated_task->atlas.flags);
-		}
-
-		double_rq_unlock(rq_of(atlas_rq), rq_of(this_rq));
-
-		preempt_enable();
-		local_irq_restore(flags);
+		migrated_task = try_migrate_from_cpu(cpu_of(rq_of(atlas_rq)));
 
 		if (migrated_task != NULL)
 			break;
