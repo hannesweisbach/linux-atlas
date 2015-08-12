@@ -410,8 +410,8 @@ static struct ctl_table kern_table[] = {
 		.extra2		= &one,
 	},
 	{
-		.procname	= "sched_atlas_migrate",
-		.data		= &sysctl_sched_atlas_migrate,
+		.procname	= "sched_atlas_idle_job_stealing",
+		.data		= &sysctl_sched_atlas_idle_job_stealing,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
