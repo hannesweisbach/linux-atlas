@@ -5,6 +5,7 @@
 #include <linux/ktime.h>
 #include <linux/types.h>
 #include <linux/rbtree.h>
+#include <linux/cpumask.h>
 
 struct atlas_job_tree;
 
@@ -47,6 +48,7 @@ struct atlas_rq {
 	unsigned long flags;
 	struct task_struct *slack_task;
 	int skip_update_curr;
+	struct cpumask overloaded_set;
 };
 
 //#define ATLAS_MIGRATE_IN_CFS
