@@ -1103,11 +1103,12 @@ static void notify_overloaded(void *info)
 	struct rq *this_rq = this_rq();
 
 	cpumask_set_cpu(overloaded_cpu, &this_rq->atlas.overloaded_set);
-	cpu_rq(overloaded_cpu)->atlas.overload_csd_pending = 0;
+	cpu_rq(overloaded_cpu)->atlas.overload[smp_processor_id()].pending = 0;
 }
 
 void init_atlas_rq(struct atlas_rq *atlas_rq, int cpu)
 {
+	int i;
 	printk(KERN_INFO "Initializing ATLAS runqueue on CPU %d\n", cpu);
 
 	init_tree(&atlas_rq->jobs[ATLAS], atlas_rq, "ATLAS");
@@ -1127,10 +1128,14 @@ void init_atlas_rq(struct atlas_rq *atlas_rq, int cpu)
 	atlas_rq->skip_update_curr = 0;
 
 	cpumask_clear(&atlas_rq->overloaded_set);
-	atlas_rq->overload_csd.flags = 0;
-	atlas_rq->overload_csd.func = notify_overloaded;
-	atlas_rq->overload_csd.info = (void *)(long)cpu;
-	atlas_rq->overload_csd_pending = 0;
+
+	for_each_possible_cpu(i)
+	{
+		atlas_rq->overload[i].csd.flags = 0;
+		atlas_rq->overload[i].csd.func = notify_overloaded;
+		atlas_rq->overload[i].csd.info = (void *)(long)cpu;
+		atlas_rq->overload[i].pending = 0;
+	}
 }
 
 static void update_stats_wait_start(struct rq *rq, struct sched_entity *se)
@@ -1592,14 +1597,18 @@ out_task:
 	 * - there is a following job
 	 * - the gap between 1st and 2nd job is smaller than the slack time +
 	 *   epsilon
-	 *
-	 * Find a run queue *quickly*
 	 */
-	if (sysctl_sched_atlas_overload_push && rq_overloaded(atlas_rq) &&
-	    !atlas_rq->overload_csd_pending) {
-		atlas_rq->overload_csd_pending = 1;
-		smp_call_function_single_async(cpu_of(rq),
-					       &atlas_rq->overload_csd);
+	if (sysctl_sched_atlas_overload_push && rq_overloaded(atlas_rq)) {
+		int cpu;
+		for_each_online_cpu(cpu)
+		{
+			if (cpu == smp_processor_id())
+				continue;
+			if (atlas_rq->overload[cpu].pending)
+				continue;
+			smp_call_function_single_async(
+					cpu, &atlas_rq->overload[cpu].csd);
+		}
 	}
 
 	return atlas_rq->curr->tsk;
