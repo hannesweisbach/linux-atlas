@@ -827,6 +827,11 @@ static struct task_struct *idle_balance_locked(void)
 	new_task = idle_balance();
 	raw_spin_lock(&rq->lock);
 
+#if CONFIG_ATLAS_TRACE
+	if (new_task != NULL)
+		trace_atlas_task_idle_balanced(new_task);
+#endif
+
 	if (new_task && (nr_running + 1) != rq->nr_running)
 		new_task = RETRY_TASK;
 

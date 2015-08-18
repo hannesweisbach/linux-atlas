@@ -93,6 +93,8 @@ DEFINE_EVENT(atlas_task_template, atlas_task_sleep,
 	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
 DEFINE_EVENT(atlas_task_template, atlas_task_wakeup,
 	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
+DEFINE_EVENT(atlas_task_template, atlas_task_idle_balanced,
+	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
 
 DECLARE_EVENT_CLASS(atlas_probe_template,
 	TP_PROTO(void * dummy),
