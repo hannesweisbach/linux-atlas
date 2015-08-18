@@ -1108,6 +1108,7 @@ static void notify_overloaded(void *info)
 
 	cpumask_set_cpu(overloaded_cpu, &this_rq->atlas.overloaded_set);
 	cpu_rq(overloaded_cpu)->atlas.overload[smp_processor_id()].pending = 0;
+	resched_cpu(smp_processor_id());
 }
 
 void init_atlas_rq(struct atlas_rq *atlas_rq, int cpu)
