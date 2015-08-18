@@ -93,10 +93,36 @@ DEFINE_EVENT(atlas_task_template, atlas_task_sleep,
 	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
 DEFINE_EVENT(atlas_task_template, atlas_task_wakeup,
 	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
-DEFINE_EVENT(atlas_task_template, atlas_task_overload_pulled,
-	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
-DEFINE_EVENT(atlas_task_template, atlas_task_idle_balanced,
-	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
+
+DECLARE_EVENT_CLASS(atlas_task_migrate_template,
+	TP_PROTO(struct task_struct * p, int other_cpu),
+	TP_ARGS(p, other_cpu),
+	TP_STRUCT__entry(
+		__array(char,	comm, TASK_COMM_LEN)
+		__field(pid_t,	tid                )
+		__field(int,	task_policy        )
+		__field(int,    other_cpu          )
+	),
+	TP_fast_assign(
+		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
+		__entry->tid         = task_pid_nr_ns(p, task_active_pid_ns(p));
+		__entry->task_policy = p->policy;
+		__entry->other_cpu   = other_cpu;
+	),
+	TP_printk("%16s/%5d/%d %d",
+	          __entry->comm, __entry->tid, __entry->task_policy,
+		  __entry->other_cpu)
+);
+
+DEFINE_EVENT(atlas_task_migrate_template, atlas_task_migrate,
+	     TP_PROTO(struct task_struct *p, int other_cpu),
+	     TP_ARGS(p, other_cpu));
+DEFINE_EVENT(atlas_task_migrate_template, atlas_task_idle_balanced,
+	     TP_PROTO(struct task_struct *p, int other_cpu),
+	     TP_ARGS(p, other_cpu));
+DEFINE_EVENT(atlas_task_migrate_template, atlas_task_overload_pulled,
+	     TP_PROTO(struct task_struct *p, int other_cpu),
+	     TP_ARGS(p, other_cpu));
 
 DECLARE_EVENT_CLASS(atlas_probe_template,
 	TP_PROTO(void * dummy),

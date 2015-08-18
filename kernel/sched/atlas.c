@@ -808,8 +808,12 @@ static struct task_struct *idle_balance(void)
 
 		migrated_task = try_migrate_from_cpu(cpu_of(rq_of(atlas_rq)));
 
-		if (migrated_task != NULL)
+		if (migrated_task != NULL) {
+#if CONFIG_ATLAS_TRACE
+			trace_atlas_task_idle_balanced(migrated_task, cpu);
+#endif
 			break;
+		}
 	}
 
 	return migrated_task;
@@ -826,11 +830,6 @@ static struct task_struct *idle_balance_locked(void)
 	raw_spin_unlock(&rq->lock);
 	new_task = idle_balance();
 	raw_spin_lock(&rq->lock);
-
-#if CONFIG_ATLAS_TRACE
-	if (new_task != NULL)
-		trace_atlas_task_idle_balanced(new_task);
-#endif
 
 	if (new_task && (nr_running + 1) != rq->nr_running)
 		new_task = RETRY_TASK;
@@ -1454,7 +1453,8 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 			raw_spin_lock(&rq->lock);
 #ifdef CONFIG_ATLAS_TRACE
 			if (migrated_task)
-				trace_atlas_task_overload_pulled(migrated_task);
+				trace_atlas_task_overload_pulled(migrated_task,
+								 cpu);
 #endif
 		}
 	}
@@ -1792,9 +1792,8 @@ static void migrate_task_rq_atlas(struct task_struct *p, int next_cpu)
 	struct atlas_rq *prev_rq = &cpu_rq(prev_cpu)->atlas;
 	struct atlas_rq *next_rq = &cpu_rq(next_cpu)->atlas;
 
-#if 0
-	atlas_debug(PARTITION, "Migrate %s/%d from CPU %d to CPU %d", p->comm,
-		    task_tid(p), prev_cpu, next_cpu);
+#ifdef CONFIG_ATLAS_TRACE
+	trace_atlas_task_migrate(p, next_cpu);
 #endif
 	double_raw_lock(&prev_rq->lock, &next_rq->lock);
 
