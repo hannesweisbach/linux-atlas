@@ -93,6 +93,8 @@ DEFINE_EVENT(atlas_task_template, atlas_task_sleep,
 	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
 DEFINE_EVENT(atlas_task_template, atlas_task_wakeup,
 	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
+DEFINE_EVENT(atlas_task_template, atlas_task_overload_pulled,
+	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
 DEFINE_EVENT(atlas_task_template, atlas_task_idle_balanced,
 	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
 
@@ -116,6 +118,32 @@ DEFINE_EVENT(atlas_probe_template, atlas_probe_attach,
 	     TP_PROTO(void *p), TP_ARGS(p));
 DEFINE_EVENT(atlas_probe_template, atlas_probe_attached,
 	     TP_PROTO(void *p), TP_ARGS(p));
+
+DEFINE_EVENT(atlas_probe_template, atlas_probe_overload_notify,
+	     TP_PROTO(void *p), TP_ARGS(p));
+DEFINE_EVENT(atlas_probe_template, atlas_probe_overload_notified,
+	     TP_PROTO(void *p), TP_ARGS(p));
+
+DECLARE_EVENT_CLASS(atlas_ipi_template,
+	TP_PROTO(int cpu),
+	TP_ARGS(cpu),
+	TP_STRUCT__entry(
+		__field(s64, now)
+		__field(int, cpu)
+	),
+	TP_fast_assign(
+		__entry->now = ktime_to_ns(ktime_get());
+		__entry->cpu = cpu;
+	),
+	TP_printk("%10lld %d", __entry->now, __entry->cpu)
+);
+
+DEFINE_EVENT(atlas_ipi_template, atlas_ipi_send, TP_PROTO(int cpu),
+	     TP_ARGS(cpu));
+DEFINE_EVENT(atlas_ipi_template, atlas_ipi_recv, TP_PROTO(int cpu),
+	     TP_ARGS(cpu));
+DEFINE_EVENT(atlas_ipi_template, atlas_ipi_handle, TP_PROTO(int cpu),
+	     TP_ARGS(cpu));
 
 #endif /* _TRACE_ATLAS_H */
 

@@ -1102,6 +1102,10 @@ static void notify_overloaded(void *info)
 	int overloaded_cpu = (int)(long)info;
 	struct rq *this_rq = this_rq();
 
+#ifdef CONFIG_ATLAS_TRACE
+	trace_atlas_ipi_recv(overloaded_cpu);
+#endif
+
 	cpumask_set_cpu(overloaded_cpu, &this_rq->atlas.overloaded_set);
 	cpu_rq(overloaded_cpu)->atlas.overload[smp_processor_id()].pending = 0;
 }
@@ -1439,17 +1443,18 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		for_each_cpu(cpu, &atlas_rq->overloaded_set)
 		{
 			struct task_struct *migrated_task = NULL;
+#ifdef CONFIG_ATLAS_TRACE
+			trace_atlas_ipi_handle(cpu);
+#endif
 			cpumask_test_and_clear_cpu(cpu,
 						   &atlas_rq->overloaded_set);
 			raw_spin_unlock(&rq->lock);
 			migrated_task = try_migrate_from_cpu(cpu);
 			raw_spin_lock(&rq->lock);
-			if (migrated_task) {
-				atlas_debug(PARTITION,
-					    "Migrated task in overload: %s/%d",
-					    migrated_task->comm,
-					    task_tid(migrated_task));
-			}
+#ifdef CONFIG_ATLAS_TRACE
+			if (migrated_task)
+				trace_atlas_task_overload_pulled(migrated_task);
+#endif
 		}
 	}
 
@@ -1608,15 +1613,24 @@ out_task:
 	 */
 	if (sysctl_sched_atlas_overload_push && rq_overloaded(atlas_rq)) {
 		int cpu;
+#ifdef CONFIG_TRACE_ATLAS
+		trace_atlas_probe_overload_notify(NULL);
+#endif
 		for_each_online_cpu(cpu)
 		{
 			if (cpu == smp_processor_id())
 				continue;
 			if (atlas_rq->overload[cpu].pending)
 				continue;
+#ifdef CONFIG_ATLAS_TRACE
+			trace_atlas_ipi_send(cpu);
+#endif
 			smp_call_function_single_async(
 					cpu, &atlas_rq->overload[cpu].csd);
 		}
+#ifdef CONFIG_TRACE_ATLAS
+		trace_atlas_probe_overload_notified(NULL);
+#endif
 	}
 
 	return atlas_rq->curr->tsk;
