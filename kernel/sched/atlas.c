@@ -784,8 +784,6 @@ static struct task_struct *idle_balance(void)
 	struct task_struct *migrated_task = NULL;
 	struct atlas_rq *atlas_rqs[num_possible_cpus()];
 
-	atlas_debug(PARTITION, "Balancing");
-
 	for_each_possible_cpu(cpu)
 	{
 		atlas_rqs[cpu] = &cpu_rq(cpu)->atlas;
@@ -2174,20 +2172,20 @@ SYSCALL_DEFINE0(atlas_next)
 	for (;;) {
 		atlas_debug(SYS_NEXT, "Start waiting");
 		set_current_state(TASK_INTERRUPTIBLE);
-		
-		//we are aware of the lost update problem
+
 		next_job = list_first_entry_or_null(&se->jobs, struct atlas_job,
 						    list);
 		if (next_job)
 			break;
 
-		atlas_debug(SYS_NEXT, "pid=%d no job, call schedule now", current->pid);
+		atlas_debug(SYS_NEXT, "pid=%d no job, call schedule now",
+			    current->pid);
 
 		if (likely(!signal_pending(current))) {
 			schedule();
 			continue;
 		}
-	
+
 		/*
 		 * pending signal
 		 */
