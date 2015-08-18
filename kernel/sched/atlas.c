@@ -1106,10 +1106,9 @@ static void notify_overloaded(void *info)
 	cpu_rq(overloaded_cpu)->atlas.overload_csd_pending = 0;
 }
 
-void init_atlas_rq(struct atlas_rq *atlas_rq)
+void init_atlas_rq(struct atlas_rq *atlas_rq, int cpu)
 {
-	printk(KERN_INFO "Initializing ATLAS runqueue on CPU %d\n",
-	       cpu_of(rq_of(atlas_rq)));
+	printk(KERN_INFO "Initializing ATLAS runqueue on CPU %d\n", cpu);
 
 	init_tree(&atlas_rq->jobs[ATLAS], atlas_rq, "ATLAS");
 	init_tree(&atlas_rq->jobs[RECOVER], atlas_rq, "Recover");
@@ -1130,7 +1129,7 @@ void init_atlas_rq(struct atlas_rq *atlas_rq)
 	cpumask_clear(&atlas_rq->overloaded_set);
 	atlas_rq->overload_csd.flags = 0;
 	atlas_rq->overload_csd.func = notify_overloaded;
-	atlas_rq->overload_csd.info = (void *)(long)smp_processor_id();
+	atlas_rq->overload_csd.info = (void *)(long)cpu;
 	atlas_rq->overload_csd_pending = 0;
 }
 

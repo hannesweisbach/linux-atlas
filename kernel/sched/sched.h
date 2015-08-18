@@ -1675,7 +1675,7 @@ extern void print_dl_stats(struct seq_file *m, int cpu);
 
 extern void init_cfs_rq(struct cfs_rq *cfs_rq);
 #ifdef CONFIG_ATLAS
-extern void init_atlas_rq(struct atlas_rq *atlas_rq);
+extern void init_atlas_rq(struct atlas_rq *atlas_rq, int cpu);
 extern void atlas_cfs_blocked(struct rq *rq, struct task_struct *p);
 #endif
 extern void init_rt_rq(struct rt_rq *rt_rq, struct rq *rq);
