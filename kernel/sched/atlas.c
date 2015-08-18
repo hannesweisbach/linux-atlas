@@ -1431,16 +1431,6 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 
 	assert_raw_spin_locked(&rq->lock);
 
-	if (has_no_jobs(&atlas_rq->jobs[ATLAS]) &&
-	    has_no_jobs(&atlas_rq->jobs[RECOVER]) &&
-	    has_no_jobs(&atlas_rq->jobs[CFS])) {
-		if (sysctl_sched_atlas_idle_job_stealing)
-		  /* TODO: idle balance hold-off */
-			return idle_balance_locked();
-		else
-			return NULL;
-	}
-
 	if (!sysctl_sched_atlas_overload_push)
 		BUG_ON(!cpumask_empty(&atlas_rq->overloaded_set));
 
@@ -1448,11 +1438,29 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		int cpu;
 		for_each_cpu(cpu, &atlas_rq->overloaded_set)
 		{
+			struct task_struct *migrated_task = NULL;
 			cpumask_test_and_clear_cpu(cpu,
 						   &atlas_rq->overloaded_set);
 			raw_spin_unlock(&rq->lock);
-			try_migrate_from_cpu(cpu);
+			migrated_task = try_migrate_from_cpu(cpu);
 			raw_spin_lock(&rq->lock);
+			if (migrated_task) {
+				atlas_debug(PARTITION,
+					    "Migrated task in overload: %s/%d",
+					    migrated_task->comm,
+					    task_tid(migrated_task));
+			}
+		}
+	}
+
+	if (has_no_jobs(&atlas_rq->jobs[ATLAS]) &&
+	    has_no_jobs(&atlas_rq->jobs[RECOVER]) &&
+	    has_no_jobs(&atlas_rq->jobs[CFS])) {
+		if (sysctl_sched_atlas_idle_job_stealing) {
+			/* TODO: idle balance hold-off */
+			return idle_balance_locked();
+		} else {
+			return NULL;
 		}
 	}
 
