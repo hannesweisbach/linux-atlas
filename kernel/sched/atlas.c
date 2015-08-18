@@ -1709,7 +1709,7 @@ static void switched_from_atlas(struct rq *rq, struct task_struct *p)
 		cpumask_set_cpu(p->atlas.last_cpu, &mask);
 		do_set_cpus_allowed(p, &mask);
 		atlas_debug(PARTITION,
-			    "Setting allowed CPUs for %s/%d to %d %*pb[l]",
+			    "Setting allowed CPUs for %s/%d to %d %*pb",
 			    p->comm, task_tid(p), smp_processor_id(),
 			    cpumask_pr_args(&mask));
 	}
