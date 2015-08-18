@@ -1354,6 +1354,11 @@ int select_task_rq(struct task_struct *p, int cpu, int sd_flags, int wake_flags)
 	if (p->nr_cpus_allowed > 1)
 		cpu = p->sched_class->select_task_rq(p, cpu, sd_flags, wake_flags);
 
+#ifdef CONFIG_ATLAS
+	if (atlas_task(p) || task_has_jobs(p))
+		cpu = p->sched_class->select_task_rq(p, cpu, sd_flags,
+						     wake_flags);
+#endif
 	/*
 	 * In order not to call set_task_cpu() on a blocking task we need
 	 * to rely on ttwu() to place the task on a valid ->cpus_allowed
@@ -4792,8 +4797,15 @@ void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
 	if (p->sched_class->set_cpus_allowed)
 		p->sched_class->set_cpus_allowed(p, new_mask);
 
+#ifdef CONFIG_ATLAS
+	if (p->policy != SCHED_ATLAS && list_empty(&p->atlas.jobs)) {
+		cpumask_copy(&p->cpus_allowed, new_mask);
+		p->nr_cpus_allowed = cpumask_weight(new_mask);
+	}
+#else
 	cpumask_copy(&p->cpus_allowed, new_mask);
 	p->nr_cpus_allowed = cpumask_weight(new_mask);
+#endif
 }
 
 /*
