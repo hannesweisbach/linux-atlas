@@ -708,9 +708,6 @@ static bool can_migrate_task(struct atlas_job *job, int new_cpu)
 	lockdep_assert_held(&job->tree->rq->atlas.lock);
 
 	if (!cpumask_test_cpu(new_cpu, &task->atlas.last_mask)) {
-		atlas_debug(PARTITION, "Migration to CPU %d failed because of "
-				       "mismatched cpuset %*pb",
-			    new_cpu, cpumask_pr_args(&task->atlas.last_mask));
 		schedstat_inc(task, se.statistics.nr_failed_migrations_affine);
 		return false;
 	}
@@ -720,12 +717,8 @@ static bool can_migrate_task(struct atlas_job *job, int new_cpu)
 		return false;
 	}
 
-	if (has_migrated_job(task)) {
-		atlas_debug(PARTITION, "Migration to CPU %d failed because the "
-				       "task already has a migrated job.",
-			    new_cpu);
+	if (has_migrated_job(task))
 		return false;
-	}
 
 	return true;
 }
