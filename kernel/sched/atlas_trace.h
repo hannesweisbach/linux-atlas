@@ -94,6 +94,27 @@ DEFINE_EVENT(atlas_task_template, atlas_task_sleep,
 DEFINE_EVENT(atlas_task_template, atlas_task_wakeup,
 	     TP_PROTO(struct task_struct *p), TP_ARGS(p));
 
+DECLARE_EVENT_CLASS(atlas_probe_template,
+	TP_PROTO(void * dummy),
+	TP_ARGS(dummy),
+	TP_STRUCT__entry(
+		__field(s64, now)
+	),
+	TP_fast_assign(
+		__entry->now = ktime_to_ns(ktime_get());
+	),
+	TP_printk("%10lld", __entry->now)
+);
+
+DEFINE_EVENT(atlas_probe_template, atlas_probe_detach,
+	     TP_PROTO(void *p), TP_ARGS(p));
+DEFINE_EVENT(atlas_probe_template, atlas_probe_detached,
+	     TP_PROTO(void *p), TP_ARGS(p));
+DEFINE_EVENT(atlas_probe_template, atlas_probe_attach,
+	     TP_PROTO(void *p), TP_ARGS(p));
+DEFINE_EVENT(atlas_probe_template, atlas_probe_attached,
+	     TP_PROTO(void *p), TP_ARGS(p));
+
 #endif /* _TRACE_ATLAS_H */
 
 /* This part must be outside protection */
