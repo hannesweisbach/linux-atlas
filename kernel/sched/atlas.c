@@ -753,17 +753,20 @@ static struct task_struct *try_migrate_from_cpu(const int cpu)
 	raw_spin_unlock(&this_rq->lock);
 
 	if (migrated_task != NULL && task_cpu(migrated_task) != this_cpu) {
-		ktime_t start, detach_time, attach_time;
 		set_bit(ATLAS_MIGRATE_NO_JOBS, &migrated_task->atlas.flags);
-		start = ktime_get();
+#ifdef CONFIG_ATLAS_MIGRATE
+		atlas_trace_probe_detach(NULL);
+#endif
 		detach_task(migrated_task, this_cpu);
-		detach_time = ktime_sub(ktime_get(), start);
-		start = ktime_get();
+#ifdef CONFIG_ATLAS_MIGRATE
+		atlas_trace_probe_detached(NULL);
+		atlas_trace_probe_attach(NULL);
+#endif
 		attach_task(migrated_task, cpu_rq(this_cpu));
-		attach_time = ktime_sub(ktime_get(), start);
+#ifdef CONFIG_ATLAS_MIGRATE
+		atlas_trace_probe_attached(NULL);
+#endif
 		clear_bit(ATLAS_MIGRATE_NO_JOBS, &migrated_task->atlas.flags);
-		atlas_debug(PARTITION, "Migration in %lldns %lldns",
-			    ktime_to_ns(detach_time), ktime_to_ns(attach_time));
 	}
 
 	double_rq_unlock(rq_of(atlas_rq), rq_of(this_rq));
