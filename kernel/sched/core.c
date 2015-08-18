@@ -1627,6 +1627,11 @@ int select_task_rq(struct task_struct *p, int cpu, int sd_flags, int wake_flags)
 	if (p->nr_cpus_allowed > 1)
 		cpu = p->sched_class->select_task_rq(p, cpu, sd_flags, wake_flags);
 
+#ifdef CONFIG_ATLAS
+	if (atlas_task(p) || task_has_jobs(p))
+		cpu = p->sched_class->select_task_rq(p, cpu, sd_flags,
+						     wake_flags);
+#endif
 	/*
 	 * In order not to call set_task_cpu() on a blocking task we need
 	 * to rely on ttwu() to place the task on a valid ->cpus_allowed
