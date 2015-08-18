@@ -6,6 +6,7 @@
 #include <linux/types.h>
 #include <linux/rbtree.h>
 #include <linux/cpumask.h>
+#include <linux/smp.h>
 
 struct atlas_job_tree;
 
@@ -39,6 +40,11 @@ struct atlas_job_tree {
 	char name[8];
 };
 
+struct atlas_csd {
+	struct call_single_data csd;
+	int pending;
+};
+
 struct atlas_rq {
 	struct atlas_job_tree jobs[NR_CLASSES];
 	struct atlas_job *curr;
@@ -49,6 +55,7 @@ struct atlas_rq {
 	struct task_struct *slack_task;
 	int skip_update_curr;
 	struct cpumask overloaded_set;
+	struct atlas_csd overload[NR_CPUS];
 };
 
 //#define ATLAS_MIGRATE_IN_CFS
