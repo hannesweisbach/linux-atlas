@@ -7498,7 +7498,7 @@ void __init sched_init(void)
 		init_rt_rq(&rq->rt);
 		init_dl_rq(&rq->dl);
 #ifdef CONFIG_ATLAS
-		init_atlas_rq(&rq->atlas);
+		init_atlas_rq(&rq->atlas, i);
 #endif
 #ifdef CONFIG_FAIR_GROUP_SCHED
 		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
