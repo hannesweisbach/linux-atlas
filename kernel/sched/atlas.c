@@ -2066,23 +2066,35 @@ static void destroy_first_job(struct task_struct *tsk)
 		struct atlas_rq *atlas_rq = &rq->atlas;
 		struct atlas_rq *other_rq = &cpu_rq(job->original_cpu)->atlas;
 		struct atlas_job *next_job;
-
-		BUG_ON(job->original_cpu == smp_processor_id());
+		bool last_job;
 
 		double_raw_lock(&atlas_rq->lock, &other_rq->lock);
 
 		atlas_debug(PARTITION, "Removing remote " JOB_FMT,
 			    JOB_ARG(job));
 
+		/* next job in list might already be migrated (by overload pull,
+		 * for example), so look for a non-migrated job.
+		 */
 		next_job = list_next_entry(job, list);
-		if (next_job != NULL) {
+		last_job = next_job == NULL;
+
+		for (; next_job != NULL && next_job->original_cpu != -1;
+		     next_job = list_next_entry(next_job, list)) {
+			BUG_ON(next_job->original_cpu == smp_processor_id());
+		}
+		atlas_debug(PARTITION, "next " JOB_FMT, JOB_ARG(next_job));
+		BUG_ON(next_job != NULL &&
+		       next_job->original_cpu == smp_processor_id());
+
+		if (next_job != NULL && rq_has_capacity(atlas_rq, next_job)) {
 			atlas_debug(PARTITION, "Migrating " JOB_FMT,
 				    JOB_ARG(next_job));
 			migrate_job(next_job, &this_rq()->atlas);
 			raw_spin_unlock(&other_rq->lock);
 			raw_spin_unlock(&atlas_rq->lock);
 			task_rq_unlock(rq, task, &flags);
-		} else {
+		} else if (last_job) {
 			struct migration_arg arg = {task, job->original_cpu};
 			struct cpumask new_mask;
 			cpumask_clear(&new_mask);
@@ -2102,6 +2114,10 @@ static void destroy_first_job(struct task_struct *tsk)
 			stop_one_cpu(task_cpu(task), migration_cpu_stop, &arg);
 			tlb_migrate_finish(task->mm);
 			clear_bit(ATLAS_MIGRATE_NO_JOBS, &task->atlas.flags);
+		} else {
+			raw_spin_unlock(&other_rq->lock);
+			raw_spin_unlock(&atlas_rq->lock);
+			task_rq_unlock(rq, task, &flags);
 		}
 
 		job->original_cpu = -1;
