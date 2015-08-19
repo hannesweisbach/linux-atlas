@@ -342,6 +342,22 @@ static bool rq_overloaded(const struct atlas_rq const *atlas_rq)
 	return ktime_compare(rq_load(atlas_rq), ktime_set(0, 0)) < 0;
 }
 
+static bool rq_has_capacity(const struct atlas_rq const *atlas_rq,
+			    const struct atlas_job const *job)
+{
+	const ktime_t required = ktime_sub(job->exectime, job->rexectime);
+	const ktime_t load = rq_load(atlas_rq);
+
+	if (ktime_compare(load, ktime_set(0, 0)) <= 0)
+		return false;
+
+	/* 'required' might be negative, but that is ok. A run queue never
+	 * having capacity for a job that already exceeded its reservation is
+	 * an acceptable semantic.
+	 */
+	return ktime_compare(rq_load(atlas_rq), required) <= 0;
+}
+
 static inline struct rq *rq_of(struct atlas_rq *atlas_rq)
 {
 	return container_of(atlas_rq, struct rq, atlas);
