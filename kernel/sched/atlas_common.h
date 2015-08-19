@@ -112,7 +112,14 @@ static unsigned rq_nr_jobs(const struct rb_root *root)
 
 static inline pid_t task_tid(struct task_struct *tsk)
 {
-	return task_pid_nr_ns(tsk, task_active_pid_ns(tsk));
+	struct pid_namespace *ns;
+	if (tsk == NULL) {
+		BUG();
+	}
+	if ((ns = task_active_pid_ns(tsk)))
+		return task_pid_nr_ns(tsk, ns);
+	else
+		return task_pid_nr(tsk);
 }
 
 extern void sched_log(const char *fmt, ...);
