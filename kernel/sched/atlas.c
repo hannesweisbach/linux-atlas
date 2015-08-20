@@ -686,13 +686,12 @@ static void migrate_job(struct atlas_job *job, struct atlas_rq *to)
 	spin_lock_irqsave(&atlas_se->jobs_lock, flags);
 	list_for_each_entry(j, &atlas_se->jobs, list)
 	{
-		if (j != job) {
-			move_job_between_rqs(j, to);
-		} else {
-			job->original_cpu = cpu_of(job->tree->rq);
-			move_job_between_rqs(job, to);
+		if (j->original_cpu == -1)
+			j->original_cpu = cpu_of(j->tree->rq);
+		move_job_between_rqs(j, to);
+
+		if (j == job)
 			break;
-		}
 	}
 	spin_unlock_irqrestore(&atlas_se->jobs_lock, flags);
 }
@@ -2057,8 +2056,7 @@ static void destroy_first_job(struct task_struct *tsk)
 
 	if (job->original_cpu != -1 &&
 	    !test_bit(ATLAS_EXIT, &job->tsk->atlas.flags)) {
-		/* This is the last (CFS/Recover jobs are not marked with
-		 * original_cpu) migrated job; migrate task back, except when
+		/* A migrated job finished.  Migrate task back, except when
 		 * destroy_first_job() is called from exit_atlas(), which is
 		 * detected by the ATLAS_EXIT flag.
 		 * TODO: migrate more jobs here?
@@ -2069,7 +2067,7 @@ static void destroy_first_job(struct task_struct *tsk)
 		struct atlas_rq *atlas_rq = &rq->atlas;
 		struct atlas_rq *other_rq = &cpu_rq(job->original_cpu)->atlas;
 		struct atlas_job *next_job;
-		bool last_job;
+		bool have_more_jobs = false;
 
 		double_raw_lock(&atlas_rq->lock, &other_rq->lock);
 
@@ -2079,12 +2077,12 @@ static void destroy_first_job(struct task_struct *tsk)
 		/* next job in list might already be migrated (by overload pull,
 		 * for example), so look for a non-migrated job.
 		 */
-		next_job = list_next_entry(job, list);
-		last_job = next_job == NULL;
-
-		for (; next_job != NULL && next_job->original_cpu != -1;
+		for (next_job = list_next_entry(job, list);
+		     next_job != NULL && next_job->original_cpu != -1;
 		     next_job = list_next_entry(next_job, list)) {
 			BUG_ON(next_job->original_cpu == smp_processor_id());
+			if (next_job->original_cpu != -1)
+				have_more_jobs = true;
 		}
 		atlas_debug(PARTITION, "next " JOB_FMT, JOB_ARG(next_job));
 		BUG_ON(next_job != NULL &&
@@ -2097,7 +2095,7 @@ static void destroy_first_job(struct task_struct *tsk)
 			raw_spin_unlock(&other_rq->lock);
 			raw_spin_unlock(&atlas_rq->lock);
 			task_rq_unlock(rq, task, &flags);
-		} else if (last_job) {
+		} else if (!have_more_jobs) {
 			struct migration_arg arg = {task, job->original_cpu};
 			struct cpumask new_mask;
 			cpumask_clear(&new_mask);
