@@ -161,6 +161,11 @@ remaining_execution_time(const struct atlas_job const *job)
 	return ktime_sub(job->sexectime, job->rexectime);
 }
 
+static inline ktime_t required_execution_time(const struct atlas_job const *job)
+{
+	return ktime_sub(job->exectime, job->rexectime);
+}
+
 static ktime_t task_dbf(struct task_struct *task, const ktime_t t)
 {
 	unsigned long flags;
@@ -177,11 +182,10 @@ static ktime_t task_dbf(struct task_struct *task, const ktime_t t)
 	{
 		if (ktime_compare(job->deadline, t) > 0)
 			break;
-		if (!is_cfs_job(job)) {
-			ktime_t job_demand = ktime_sub(job->exectime,
-						       job->rexectime);
-			demand = ktime_add(demand, job_demand);
-		}
+
+		if (!is_cfs_job(job))
+			demand = ktime_add(demand,
+					   required_execution_time(job));
 	}
 	spin_unlock_irqrestore(&task->atlas.jobs_lock, flags);
 
@@ -202,13 +206,12 @@ static ktime_t rq_dbf(struct atlas_rq *atlas_rq, const ktime_t t)
 		struct atlas_job *job;
 		for_each_job(job, &atlas_rq->jobs[class])
 		{
-			if (ktime_compare(job->deadline, t) < 0) {
-				ktime_t job_demand = ktime_sub(job->exectime,
-							       job->rexectime);
-				demand = ktime_add(demand, job_demand);
-			} else {
+			if (ktime_compare(job->deadline, t) < 0)
+				demand = ktime_add(
+						demand,
+						required_execution_time(job));
+			else
 				break;
-			}
 		}
 	}
 
@@ -345,7 +348,7 @@ static bool rq_overloaded(const struct atlas_rq const *atlas_rq)
 static bool rq_has_capacity(const struct atlas_rq const *atlas_rq,
 			    const struct atlas_job const *job)
 {
-	const ktime_t required = ktime_sub(job->exectime, job->rexectime);
+	const ktime_t required = required_execution_time(job);
 	const ktime_t load = rq_load(atlas_rq);
 
 	if (ktime_compare(load, ktime_set(0, 0)) <= 0)
