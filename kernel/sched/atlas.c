@@ -358,7 +358,7 @@ static bool rq_has_capacity(const struct atlas_rq const *atlas_rq,
 	 * having capacity for a job that already exceeded its reservation is
 	 * an acceptable semantic.
 	 */
-	return ktime_compare(rq_load(atlas_rq), required) <= 0;
+	return ktime_compare(load, required) <= 0;
 }
 
 static inline struct rq *rq_of(struct atlas_rq *atlas_rq)
