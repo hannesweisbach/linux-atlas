@@ -320,14 +320,14 @@ static ktime_t rq_load(const struct atlas_rq const *atlas_rq)
 {
 	const struct atlas_job const *j =
 			pick_first_job(&atlas_rq->jobs[ATLAS]);
-	ktime_t remaining, available;
+	ktime_t required, available;
 
 	if (j == NULL)
 		return ktime_set(KTIME_SEC_MAX, 0);
 
-	remaining = remaining_execution_time(j);
+	required = required_execution_time(j);
 	available = ktime_sub(j->sdeadline, ktime_get());
-	return ktime_sub(available, remaining);
+	return ktime_sub(available, required);
 }
 
 static ktime_t rq_load_locked(struct atlas_rq *atlas_rq)
