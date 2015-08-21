@@ -1352,7 +1352,7 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 			    JOB_ARG(job), ktime_to_ns(now));
 		BUG_ON(!is_atlas_job(job));
 #ifdef CONFIG_ATLAS_TRACE
-		trace_atlas_job_missed(job);
+		trace_atlas_job_soft_miss(job);
 #endif
 		remove_depleted_job_from_tree(jobs);
 		if (ktime_compare(remaining_execution_time(job),
@@ -1977,6 +1977,10 @@ enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer)
 	WARN_ON(!job);
 
 	atlas_debug_(TIMER, JOB_FMT " missed its deadline ", JOB_ARG(job));
+
+#ifdef CONFIG_ATLAS_TRACE
+	trace_atlas_job_hard_miss(job);
+#endif
 
 	wmb();
 	send_sig(SIGXCPU, p, 0);
