@@ -63,7 +63,9 @@ DEFINE_EVENT(atlas_job_template, atlas_job_migrated,
 
 DEFINE_EVENT(atlas_job_template, atlas_job_start,
 	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
-DEFINE_EVENT(atlas_job_template, atlas_job_missed,
+DEFINE_EVENT(atlas_job_template, atlas_job_soft_miss,
+	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
+DEFINE_EVENT(atlas_job_template, atlas_job_hard_miss,
 	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
 DEFINE_EVENT(atlas_job_template, atlas_job_select,
 	     TP_PROTO(struct atlas_job *j), TP_ARGS(j));
