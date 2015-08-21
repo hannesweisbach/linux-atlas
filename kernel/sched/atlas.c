@@ -206,7 +206,7 @@ static ktime_t rq_dbf(struct atlas_rq *atlas_rq, const ktime_t t)
 		struct atlas_job *job;
 		for_each_job(job, &atlas_rq->jobs[class])
 		{
-			if (ktime_compare(job->deadline, t) < 0)
+			if (ktime_compare(job->deadline, t) <= 0)
 				demand = ktime_add(
 						demand,
 						required_execution_time(job));
