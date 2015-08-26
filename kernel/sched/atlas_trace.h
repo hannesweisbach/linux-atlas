@@ -131,11 +131,13 @@ DECLARE_EVENT_CLASS(atlas_probe_template,
 	TP_ARGS(dummy),
 	TP_STRUCT__entry(
 		__field(s64, now)
+		__field(u64, cycles)
 	),
 	TP_fast_assign(
 		__entry->now = ktime_to_ns(ktime_get());
+		__entry->cycles = get_cycles();
 	),
-	TP_printk("%10lld", __entry->now)
+	TP_printk("%10lld %10llu", __entry->now, __entry->cycles)
 );
 
 DEFINE_EVENT(atlas_probe_template, atlas_probe_detach,
@@ -157,13 +159,16 @@ DECLARE_EVENT_CLASS(atlas_ipi_template,
 	TP_ARGS(cpu),
 	TP_STRUCT__entry(
 		__field(s64, now)
+		__field(u64, cycles)
 		__field(int, cpu)
 	),
 	TP_fast_assign(
 		__entry->now = ktime_to_ns(ktime_get());
+		__entry->cycles = get_cycles();
 		__entry->cpu = cpu;
 	),
-	TP_printk("%10lld %d", __entry->now, __entry->cpu)
+	TP_printk("%10lld %10llu %d", __entry->now, __entry->cycles,
+	          __entry->cpu)
 );
 
 DEFINE_EVENT(atlas_ipi_template, atlas_ipi_send, TP_PROTO(int cpu),
