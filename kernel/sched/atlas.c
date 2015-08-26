@@ -291,6 +291,7 @@ static int worst_fit_rq(struct task_struct *task)
 	const ktime_t now = ktime_get();
 	const ktime_t t = min_rq_horizon();
 	ktime_t min_demand = ktime_set(KTIME_SEC_MAX, 0);
+	const ktime_t task_demand = task_dbf(task, t);
 
 	/* t better be in the future */
 	BUG_ON(ktime_before(t, now));
@@ -304,6 +305,12 @@ static int worst_fit_rq(struct task_struct *task)
 		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 		demand = rq_dbf(atlas_rq, t);
 		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+
+		if (cpu == task_cpu(task)) {
+			atlas_debug(PARTITION, "Correcting rq dbf by %lld",
+				    ktime_to_ns(task_demand));
+			demand = ktime_sub(demand, task_demand);
+		}
 
 		if (ktime_compare(demand, min_demand) < 0) {
 			min_demand = demand;
