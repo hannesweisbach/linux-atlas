@@ -1620,12 +1620,16 @@ out_task:
 		update_stats_curr_start(rq, se);
 	}
 
+#ifdef CONFIG_ATLAS_TRACE
+	if (job != atlas_rq->curr) {
+		if (atlas_rq->curr != NULL)
+			trace_atlas_job_deselect(job);
+		trace_atlas_job_select(job);
+	}
+#endif
 	atlas_rq->curr = job;
 	se->job = job;
 
-#ifdef CONFIG_ATLAS_TRACE
-	trace_atlas_job_select(job);
-#endif
 	atlas_debug(PICK_NEXT_TASK, JOB_FMT " to run.",
 		    JOB_ARG(atlas_rq->curr));
 
