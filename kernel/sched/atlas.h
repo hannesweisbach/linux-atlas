@@ -16,10 +16,15 @@ struct atlas_job {
 	struct rb_node rb_node;
 	struct atlas_job_tree *tree;
 	struct task_struct *tsk;
-	ktime_t exectime; //relative
-	ktime_t deadline; //absolut
+	/* requested exectime (duration) */
+	ktime_t exectime;
+	/* requested deadline (time point) */
+	ktime_t deadline;
+	/* scheduled deadline (time point) */
 	ktime_t sdeadline;
+	/* scheduled execution time (duration) */
 	ktime_t sexectime;
+	/* received execution time (duration) */
 	ktime_t rexectime;
 	uint64_t id;
 	int original_cpu;
