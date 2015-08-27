@@ -28,6 +28,7 @@ struct atlas_job {
 	ktime_t rexectime;
 	uint64_t id;
 	int original_cpu;
+	bool started;
 };
 
 enum atlas_timer_target {

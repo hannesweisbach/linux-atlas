@@ -406,6 +406,7 @@ job_alloc(const uint64_t id, const ktime_t exectime, const ktime_t deadline)
 	job->tsk = NULL;
 	job->tree = NULL;
 	job->original_cpu = -1;
+	job->started = false;
 
 out:
 	return job;
@@ -2259,6 +2260,12 @@ out_timer:
 
 	rq = task_rq_lock(current, &flags);
 	atlas_rq = &rq->atlas;
+
+	{
+		spin_lock(&current->atlas.jobs_lock);
+		next_job->started = true;
+		spin_unlock(&current->atlas.jobs_lock);
+	}
 
 	BUG_ON(rq->curr == NULL);
 	resched_curr(rq);
