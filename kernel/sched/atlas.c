@@ -1046,6 +1046,8 @@ static void atlas_set_scheduler(struct rq *rq, struct task_struct *p,
 	const struct sched_class *new_class, *prev_class;
 	int queued, running;
 
+	WARN_ON(task_cpu(p) != rq->cpu);
+
 	if (p->policy == policy)
 		return;
 
@@ -1105,6 +1107,14 @@ static void atlas_set_scheduler(struct rq *rq, struct task_struct *p,
 		prev_class->switched_from(rq, p);
 	/* Possble rq->lock 'hole'.  */
 	p->sched_class->switched_to(rq, p);
+
+	if (!task_can_migrate(p) && ((cpumask_weight(&p->cpus_allowed) != 1) ||
+				     (p->nr_cpus_allowed != 1))) {
+		printk(KERN_DEBUG "Task %s/%d has cpumask %*pb (%d)\n", p->comm,
+		       task_tid(p), cpumask_pr_args(&p->cpus_allowed),
+		       p->nr_cpus_allowed);
+		WARN_ON(1);
+	}
 }
 
 static void init_tree(struct atlas_job_tree *tree, struct atlas_rq *atlas_rq,
@@ -1732,16 +1742,22 @@ static void switched_from_atlas(struct rq *rq, struct task_struct *p)
 #ifdef CONFIG_SMP
 	p->atlas.last_cpu = task_cpu(p);
 #ifndef ATLAS_MIGRATE_IN_CFS
-	cpumask_copy(&p->atlas.last_mask, &p->cpus_allowed);
-	if (task_has_jobs(p)) {
-		cpumask_t mask;
-		cpumask_clear(&mask);
-		cpumask_set_cpu(p->atlas.last_cpu, &mask);
-		do_set_cpus_allowed(p, &mask);
+	if (task_can_migrate(p)) {
+		cpumask_copy(&p->cpus_allowed, &p->atlas.last_mask);
+		p->nr_cpus_allowed = cpumask_weight(&p->cpus_allowed);
 		atlas_debug(PARTITION,
-			    "Setting allowed CPUs for %s/%d to %d %*pb",
-			    p->comm, task_tid(p), smp_processor_id(),
-			    cpumask_pr_args(&mask));
+			    "Restoring allowed CPUs for %s/%d to %*pb", p->comm,
+			    task_tid(p), cpumask_pr_args(&p->cpus_allowed));
+	} else {
+		cpumask_copy(&p->atlas.last_mask, &p->cpus_allowed);
+		cpumask_clear(&p->cpus_allowed);
+		cpumask_set_cpu(p->atlas.last_cpu, &p->cpus_allowed);
+		p->nr_cpus_allowed = cpumask_weight(&p->cpus_allowed);
+		atlas_debug(PARTITION, "Restricting allowed CPUs for %s/%d to "
+				       "from %*pb to %*pb",
+			    p->comm, task_tid(p),
+			    cpumask_pr_args(&p->atlas.last_mask),
+			    cpumask_pr_args(&p->cpus_allowed));
 	}
 #endif
 #endif
@@ -1860,10 +1876,9 @@ static void set_cpus_allowed_atlas(struct task_struct *p,
 	// ATLAS, so ATLAS can see the migration.
 	if (p->policy != SCHED_ATLAS &&
 	    !cpumask_test_cpu(task_cpu(p), new_mask)) {
-		unsigned long flags;
-		struct rq *rq = task_rq_lock(p, &flags);
+		struct rq *rq = task_rq(p);
+		lockdep_assert_held(&rq->lock);
 		atlas_set_scheduler(rq, p, SCHED_ATLAS);
-		task_rq_unlock(rq, p, &flags);
 		atlas_debug(PARTITION,
 			    "Promoting %s/%d to ATLAS to see migration to %*pb",
 			    p->comm, task_tid(p), cpumask_pr_args(new_mask));
@@ -2007,10 +2022,13 @@ static void schedule_job(struct atlas_job *const job)
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se = &job->tsk->atlas;
 	bool wakeup;
+	bool can_migrate;
 
 	atlas_debug_(SYS_SUBMIT, JOB_FMT, JOB_ARG(job));
 
 	raw_spin_lock(&atlas_rq->lock);
+
+	can_migrate = task_can_migrate(job->tsk);
 
 	{
 		spin_lock(&se->jobs_lock);
@@ -2043,7 +2061,7 @@ static void schedule_job(struct atlas_job *const job)
 		 */
 	}
 
-	if (job->tsk->policy == SCHED_NORMAL /* && previously no jobs */)
+	if (can_migrate)
 		switched_from_atlas(rq, job->tsk);
 
 	raw_spin_unlock(&atlas_rq->lock);
@@ -2165,6 +2183,17 @@ static void destroy_first_job(struct task_struct *tsk)
 		spin_lock_irqsave(jobs_lock, flags);
 		list_del(&job->list);
 		spin_unlock_irqrestore(jobs_lock, flags);
+	}
+
+	{
+		unsigned long flags;
+		struct rq *rq = task_rq_lock(job->tsk, &flags);
+		spin_lock(&job->tsk->atlas.jobs_lock);
+		/* Restore original cpus_allowed */
+		if (task_can_migrate(job->tsk))
+			switched_from_atlas(rq, job->tsk);
+		spin_unlock(&job->tsk->atlas.jobs_lock);
+		task_rq_unlock(rq, job->tsk, &flags);
 	}
 
 	job_dealloc(job);
