@@ -1185,7 +1185,15 @@ void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
 	if (running)
 		put_prev_task(rq, p);
 
+#ifdef CONFIG_ATLAS
+	if (task_can_migrate(p)) {
+		p->sched_class->set_cpus_allowed(p, new_mask);
+	} else {
+		atlas_sched_class.set_cpus_allowed(p, new_mask);
+	}
+#else
 	p->sched_class->set_cpus_allowed(p, new_mask);
+#endif
 
 	if (running)
 		p->sched_class->set_curr_task(rq);
@@ -1221,8 +1229,10 @@ static int __set_cpus_allowed_ptr(struct task_struct *p,
 		goto out;
 	}
 
+#ifndef CONFIG_ATLAS
 	if (cpumask_equal(&p->cpus_allowed, new_mask))
 		goto out;
+#endif
 
 	if (!cpumask_intersects(new_mask, cpu_active_mask)) {
 		ret = -EINVAL;
