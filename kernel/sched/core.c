@@ -4798,9 +4798,11 @@ void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
 		p->sched_class->set_cpus_allowed(p, new_mask);
 
 #ifdef CONFIG_ATLAS
-	if (p->policy != SCHED_ATLAS && list_empty(&p->atlas.jobs)) {
+	if (task_can_migrate(p)) {
 		cpumask_copy(&p->cpus_allowed, new_mask);
 		p->nr_cpus_allowed = cpumask_weight(new_mask);
+	} else {
+		atlas_sched_class.set_cpus_allowed(p, new_mask);
 	}
 #else
 	cpumask_copy(&p->cpus_allowed, new_mask);
@@ -4840,8 +4842,10 @@ int set_cpus_allowed_ptr(struct task_struct *p, const struct cpumask *new_mask)
 
 	rq = task_rq_lock(p, &flags);
 
+#ifndef CONFIG_ATLAS
 	if (cpumask_equal(&p->cpus_allowed, new_mask))
 		goto out;
+#endif
 
 	if (!cpumask_intersects(new_mask, cpu_active_mask)) {
 		ret = -EINVAL;

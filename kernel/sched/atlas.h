@@ -73,4 +73,9 @@ static inline bool task_has_jobs(struct task_struct *p)
 	return !list_empty(&p->atlas.jobs);
 }
 
+static inline bool task_can_migrate(struct task_struct *tsk)
+{
+	return (tsk->policy == SCHED_ATLAS || !task_has_jobs(tsk));
+}
+
 #endif /* _SCHED_ATLAS_INTERNAL_H */
