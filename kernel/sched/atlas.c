@@ -79,17 +79,17 @@ static inline bool has_no_jobs(struct atlas_job_tree *tree)
 
 static inline bool is_atlas_job(struct atlas_job *job)
 {
-	return &job->tree->rq->atlas.jobs[ATLAS] == job->tree;
+	return job->class == ATLAS;
 }
 
 static inline bool is_recover_job(struct atlas_job *job)
 {
-	return &job->tree->rq->atlas.jobs[RECOVER] == job->tree;
+	return job->class == RECOVER;
 }
 
 static inline bool is_cfs_job(struct atlas_job *job)
 {
-	return &job->tree->rq->atlas.jobs[CFS] == job->tree;
+	return job->class == CFS;
 }
 
 static inline bool task_has_atlas_job(struct task_struct *tsk)
@@ -405,6 +405,7 @@ job_alloc(const uint64_t id, const ktime_t exectime, const ktime_t deadline)
 	job->id = id;
 	job->tsk = NULL;
 	job->tree = NULL;
+	job->class = ATLAS;
 	job->original_cpu = -1;
 	job->started = false;
 
@@ -469,16 +470,19 @@ static inline void resolve_collision(struct atlas_job *a, struct atlas_job *b)
 		a->sdeadline = job_start(b);
 }
 
-static void insert_job_into_tree(struct atlas_job_tree *tree,
+static void insert_job_into_tree(struct atlas_rq *dst,
 				 struct atlas_job *const job)
 {
-	struct rb_node **link = &tree->jobs.rb_node;
+	struct rb_node **link;
 	struct rb_node *parent = NULL;
 	int leftmost = 1;
-	const ptrdiff_t class = tree->rq->atlas.jobs - tree;
+	struct atlas_job_tree * tree;
 
-	BUG_ON(class >= NR_CLASSES);
+	BUG_ON(job->class >= NR_CLASSES);
 	WARN_ON(!RB_EMPTY_NODE(&job->rb_node));
+
+	tree = &dst->jobs[job->class];
+	link = &tree->jobs.rb_node;
 
 	if (tree->leftmost_job == NULL) { /* tree is empty */
 		atlas_debug(RBTREE, "Added first job to %s.", tree->name);
@@ -501,7 +505,7 @@ static void insert_job_into_tree(struct atlas_job_tree *tree,
 	rb_link_node(&job->rb_node, parent, link);
 	rb_insert_color(&job->rb_node, &tree->jobs);
 	job->tree = tree;
-	++job->tsk->atlas.nr_jobs[class];
+	++job->tsk->atlas.nr_jobs[job->class];
 
 	if (leftmost)
 		tree->leftmost_job = &job->rb_node;
@@ -533,9 +537,7 @@ static void insert_job_into_tree(struct atlas_job_tree *tree,
 static void remove_depleted_job_from_tree(struct atlas_job_tree *tree)
 {
 	struct atlas_job *to_delete;
-	const ptrdiff_t class = tree->rq->atlas.jobs - tree;
 
-	BUG_ON(class >= NR_CLASSES);
 	BUG_ON(tree == NULL);
 	BUG_ON(tree->leftmost_job == NULL);
 	assert_raw_spin_locked(&tree->rq->atlas.lock);
@@ -546,7 +548,7 @@ static void remove_depleted_job_from_tree(struct atlas_job_tree *tree)
 		atlas_debug(RBTREE, "Removed last job from %s.", tree->name);
 		dec_nr_running(tree);
 	}
-	--to_delete->tsk->atlas.nr_jobs[class];
+	--to_delete->tsk->atlas.nr_jobs[to_delete->class];
 
 	rb_erase(&to_delete->rb_node, &tree->jobs);
 	RB_CLEAR_NODE(&to_delete->rb_node);
@@ -575,10 +577,9 @@ static void rebuild_timeline(struct atlas_job *curr)
 static void remove_job_from_tree(struct atlas_job *const job)
 {
 	struct atlas_job *curr;
-	const ptrdiff_t class = job->tree->rq->atlas.jobs - job->tree;
 	bool atlas_job;
 
-	BUG_ON(class >= NR_CLASSES);
+	BUG_ON(job->class >= NR_CLASSES);
 	BUG_ON(job == NULL);
 	BUG_ON(job->tree == NULL);
 	BUG_ON(!job_in_rq(job));
@@ -619,7 +620,7 @@ static void remove_job_from_tree(struct atlas_job *const job)
 	rb_erase(&job->rb_node, &job->tree->jobs);
 	RB_CLEAR_NODE(&job->rb_node);
 	job->tree = NULL;
-	--job->tsk->atlas.nr_jobs[class];
+	--job->tsk->atlas.nr_jobs[job->class];
 
 	if (job->tsk->atlas.job == job)
 		job->tsk->atlas.job = NULL;
@@ -630,20 +631,17 @@ static void remove_job_from_tree(struct atlas_job *const job)
 
 static void move_job_between_rqs(struct atlas_job *job, struct atlas_rq *to)
 {
-	const ptrdiff_t entry = job->tree - &job->tree->rq->atlas.jobs[ATLAS];
-	struct atlas_job_tree *dst = &to->jobs[entry];
-
 	lockdep_assert_held(&to->lock);
 	lockdep_assert_held(&job->tree->rq->atlas.lock);
 
-	BUG_ON(entry >= NR_CLASSES);
-	BUG_ON(entry < 0);
+	BUG_ON(job->class >= NR_CLASSES);
+	BUG_ON(job->class < 0);
 
 #ifdef SCHED_ATLAS_TRACE
 	trace_atlas_job_migrate(job);
 #endif
 	remove_job_from_tree(job);
-	insert_job_into_tree(dst, job);
+	insert_job_into_tree(to, job);
 #ifdef SCHED_ATLAS_TRACE
 	trace_atlas_job_migrated(job);
 #endif
@@ -1374,11 +1372,12 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 #endif
 		remove_depleted_job_from_tree(jobs);
 		if (ktime_compare(remaining_execution_time(job),
-				  ktime_set(0, 30000)) > 0) {
-			insert_job_into_tree(jobs + RECOVER, job);
-		} else {
-			insert_job_into_tree(jobs + CFS, job);
-		}
+				  ktime_set(0, 30000)) > 0)
+			job->class = RECOVER;
+		else
+			job->class = CFS;
+
+		insert_job_into_tree(atlas_rq, job);
 	}
 
 	/* Recover tree */
@@ -1388,7 +1387,8 @@ static void handle_deadline_misses(struct atlas_rq *atlas_rq)
 	     job = pick_first_job(jobs)) {
 		BUG_ON(!is_recover_job(job));
 		remove_depleted_job_from_tree(jobs);
-		insert_job_into_tree(jobs + 1, job);
+		job->class = CFS;
+		insert_job_into_tree(atlas_rq, job);
 	}
 
 	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
@@ -2044,7 +2044,7 @@ static void schedule_job(struct atlas_job *const job)
 		/* Wakeup when in ATLAS-SLACK time. */
 		stop_timer(atlas_rq);
 
-		insert_job_into_tree(&atlas_rq->jobs[ATLAS], job);
+		insert_job_into_tree(atlas_rq, job);
 #ifdef CONFIG_ATLAS_TRACE
 		trace_atlas_job_submit(job);
 #endif
@@ -2411,9 +2411,9 @@ SYSCALL_DEFINE4(atlas_update, pid_t, pid, uint64_t, id, struct timeval __user *,
 	list_for_each_entry(job, &tsk->atlas.jobs, list)
 	{
 		if (job->id == id) {
+			struct atlas_rq *atlas_rq = &job->tree->rq->atlas;
 			ktime_t deadline_;
 			ktime_t exectime_;
-			struct atlas_job_tree *tmp = job->tree;
 
 			raw_spin_lock(&job->tree->rq->atlas.lock);
 
@@ -2432,7 +2432,7 @@ SYSCALL_DEFINE4(atlas_update, pid_t, pid, uint64_t, id, struct timeval __user *,
 			remove_job_from_tree(job);
 			set_job_times(job, timeval_to_ktime(lexectime),
 				      deadline_);
-			insert_job_into_tree(tmp, job);
+			insert_job_into_tree(atlas_rq, job);
 
 #ifdef CONFIG_ATLAS_TRACE
 			trace_atlas_job_updated(job);

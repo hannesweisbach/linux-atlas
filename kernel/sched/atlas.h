@@ -7,6 +7,7 @@
 #include <linux/rbtree.h>
 #include <linux/cpumask.h>
 #include <linux/smp.h>
+#include <linux/sched.h>
 
 struct atlas_job_tree;
 
@@ -27,6 +28,7 @@ struct atlas_job {
 	/* received execution time (duration) */
 	ktime_t rexectime;
 	uint64_t id;
+	enum atlas_classes class;
 	int original_cpu;
 	bool started;
 };
