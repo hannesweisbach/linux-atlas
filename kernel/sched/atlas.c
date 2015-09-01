@@ -2024,7 +2024,9 @@ static void schedule_job(struct atlas_job *const job)
 	bool wakeup;
 	bool can_migrate;
 
-	atlas_debug_(SYS_SUBMIT, JOB_FMT, JOB_ARG(job));
+	atlas_debug(SYS_SUBMIT, JOB_FMT " has %sjobs %s", JOB_ARG(job),
+		    task_has_jobs(job->tsk) ? "" : "no ",
+		    test_bit(ATLAS_BLOCKED, &se->flags) ? "blocked" : "");
 
 	raw_spin_lock(&atlas_rq->lock);
 
