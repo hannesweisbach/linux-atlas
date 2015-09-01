@@ -2245,10 +2245,8 @@ SYSCALL_DEFINE0(atlas_next)
 		rq = NULL;
 	}
 
-	set_bit(ATLAS_BLOCKED, &se->flags);
-
 	for (;;) {
-		atlas_debug(SYS_NEXT, "Start waiting");
+		set_bit(ATLAS_BLOCKED, &se->flags);
 		set_current_state(TASK_INTERRUPTIBLE);
 
 		next_job = list_first_entry_or_null(&se->jobs, struct atlas_job,
@@ -2256,22 +2254,17 @@ SYSCALL_DEFINE0(atlas_next)
 		if (next_job)
 			break;
 
-		atlas_debug(SYS_NEXT, "pid=%d no job, call schedule now",
-			    current->pid);
-
-		if (likely(!signal_pending(current))) {
-			schedule();
-			continue;
-		}
-
-		/*
-		 * pending signal
-		 */
-		atlas_debug(SYS_NEXT, "Signal in task %s/%d", current->comm,
+		atlas_debug(SYS_NEXT, "%s/%d starts waiting.", current->comm,
 			    task_tid(current));
-		clear_bit(ATLAS_BLOCKED, &se->flags);
-		__set_current_state(TASK_RUNNING);
-		return -EINTR;
+
+		schedule();
+
+		if (signal_pending(current)) {
+			atlas_debug(SYS_NEXT, "Signal in task %s/%d",
+				    current->comm, task_tid(current));
+			clear_bit(ATLAS_BLOCKED, &se->flags);
+			return -ERESTARTSYS;
+		}
 	}
 
 	__set_current_state(TASK_RUNNING);
@@ -2283,10 +2276,6 @@ out_timer:
 #ifdef CONFIG_ATLAS_TRACE
 	trace_atlas_job_start(next_job);
 #endif
-	atlas_debug_(SYS_NEXT,
-		     "Returning with " JOB_FMT " Job timer set to %lldms",
-		     JOB_ARG(next_job), ktime_to_ms(next_job->deadline));
-
 	rq = task_rq_lock(current, &flags);
 	atlas_rq = &rq->atlas;
 
@@ -2295,9 +2284,6 @@ out_timer:
 		next_job->started = true;
 		spin_unlock(&current->atlas.jobs_lock);
 	}
-
-	BUG_ON(rq->curr == NULL);
-	resched_curr(rq);
 
 	if (is_cfs_job(next_job)) {
 		/* Staying in ATLAS or Recover could mean to never run again (if
@@ -2310,6 +2296,8 @@ out_timer:
 		atlas_set_scheduler(rq, current, SCHED_ATLAS);
 	}
 
+	resched_curr(rq);
+
 	task_rq_unlock(rq, current, &flags);
 	rq = NULL;
 	atlas_rq = NULL;
@@ -2321,6 +2309,10 @@ out_timer:
 	 * current policy of this task.
 	 */
 	hrtimer_start(&se->timer, next_job->deadline, HRTIMER_MODE_ABS_PINNED);
+
+	atlas_debug_(SYS_NEXT,
+		     "Returning with " JOB_FMT " Job timer set to %lldms",
+		     JOB_ARG(next_job), ktime_to_ms(next_job->deadline));
 
 	return 0;
 }
