@@ -2215,7 +2215,7 @@ static void destroy_first_job(struct task_struct *tsk)
 	job_dealloc(job);
 }
 
-SYSCALL_DEFINE0(atlas_next)
+SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 {
 	unsigned long flags;
 	struct sched_atlas_entity *se = &current->atlas;
@@ -2285,11 +2285,6 @@ SYSCALL_DEFINE0(atlas_next)
 	clear_bit(ATLAS_BLOCKED, &se->flags);
 
 out_timer:
-	set_bit(ATLAS_HAS_JOB, &se->flags);
-
-#ifdef CONFIG_ATLAS_TRACE
-	trace_atlas_job_start(next_job);
-#endif
 	rq = task_rq_lock(current, &flags);
 	atlas_rq = &rq->atlas;
 
@@ -2309,6 +2304,17 @@ out_timer:
 	task_rq_unlock(rq, current, &flags);
 	rq = NULL;
 	atlas_rq = NULL;
+
+	if (next == NULL ||
+	    copy_to_user(next, &next_job->id, sizeof(uint64_t))) {
+		printk(KERN_ERR "Invalid pointer for next work id: %p", next);
+		return -EFAULT;
+	}
+	set_bit(ATLAS_HAS_JOB, &se->flags);
+
+#ifdef CONFIG_ATLAS_TRACE
+	trace_atlas_job_start(next_job);
+#endif
 
 	/*
 	 * The se-timer causes SIGXCPU to be delivered to userspace. If deadline

@@ -872,7 +872,7 @@ asmlinkage long sys_process_vm_writev(pid_t pid,
 				      unsigned long flags);
 
 #ifdef CONFIG_ATLAS
-asmlinkage long sys_atlas_next(void);
+asmlinkage long sys_atlas_next(uint64_t *);
 asmlinkage long sys_atlas_submit(pid_t pid, uint64_t id,
 				 struct timeval __user *exectime,
 				 struct timeval __user *deadline);
