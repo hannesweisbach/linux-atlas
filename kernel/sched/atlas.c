@@ -2238,8 +2238,9 @@ SYSCALL_DEFINE0(atlas_next)
 	rq = NULL;
 	atlas_rq = NULL;
 
-	if (!test_bit(ATLAS_INIT, &se->flags))
+	if (test_bit(ATLAS_HAS_JOB, &se->flags))
 		destroy_first_job(current);
+	clear_bit(ATLAS_HAS_JOB, &se->flags);
 
 	next_job = next_job_or_null(se);
 	if (next_job != NULL)
@@ -2284,7 +2285,7 @@ SYSCALL_DEFINE0(atlas_next)
 	clear_bit(ATLAS_BLOCKED, &se->flags);
 
 out_timer:
-	clear_bit(ATLAS_INIT, &se->flags);
+	set_bit(ATLAS_HAS_JOB, &se->flags);
 
 #ifdef CONFIG_ATLAS_TRACE
 	trace_atlas_job_start(next_job);
