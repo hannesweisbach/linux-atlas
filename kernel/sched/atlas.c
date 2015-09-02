@@ -124,6 +124,20 @@ static struct atlas_job *pick_prev_job(struct atlas_job *s)
 	return rb_entry(prev, struct atlas_job, rb_node);
 }
 
+static struct atlas_job *next_job_or_null(struct sched_atlas_entity *atlas_se)
+{
+	unsigned long flags;
+	struct atlas_job *next;
+	spin_lock_irqsave(&atlas_se->jobs_lock, flags);
+	next = list_first_entry_or_null(&atlas_se->jobs, struct atlas_job,
+					list);
+	if (next != NULL)
+		next->started = true;
+	spin_unlock_irqrestore(&atlas_se->jobs_lock, flags);
+
+	return next;
+}
+
 static inline int job_in_rq(struct atlas_job *s)
 {
 	return !RB_EMPTY_NODE(&s->rb_node);
@@ -2227,19 +2241,16 @@ SYSCALL_DEFINE0(atlas_next)
 	if (!test_bit(ATLAS_INIT, &se->flags))
 		destroy_first_job(current);
 
-	/*
-	 * TODO: Not sure if this is ok, or should be done under se->jobs_lock.
-	 */
-	next_job = list_first_entry_or_null(&se->jobs, struct atlas_job, list);
+	next_job = next_job_or_null(se);
+	if (next_job != NULL)
+		goto out_timer;
+
 
 	/* if there is no job now, set the scheduler to CFS. If left in ATLAS
 	 * or Recover, upon wakeup (for example due to a signal), they would
 	 * encounter no jobs present and an infinite scheduling loop would be
 	 * the result.
 	 */
-	if (next_job != NULL)
-		goto out_timer;
-
 	{
 		rq = task_rq_lock(current, &flags);
 		atlas_set_scheduler(rq, current, SCHED_NORMAL);
@@ -2251,8 +2262,8 @@ SYSCALL_DEFINE0(atlas_next)
 		set_bit(ATLAS_BLOCKED, &se->flags);
 		set_current_state(TASK_INTERRUPTIBLE);
 
-		next_job = list_first_entry_or_null(&se->jobs, struct atlas_job,
-						    list);
+		next_job = next_job_or_null(se);
+
 		if (next_job)
 			break;
 
@@ -2280,12 +2291,6 @@ out_timer:
 #endif
 	rq = task_rq_lock(current, &flags);
 	atlas_rq = &rq->atlas;
-
-	{
-		spin_lock(&current->atlas.jobs_lock);
-		next_job->started = true;
-		spin_unlock(&current->atlas.jobs_lock);
-	}
 
 	if (is_cfs_job(next_job)) {
 		/* Staying in ATLAS or Recover could mean to never run again (if
