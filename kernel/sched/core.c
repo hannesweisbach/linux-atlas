@@ -1819,7 +1819,6 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 #endif
 	}
 
-	INIT_LIST_HEAD(&p->atlas.list);
 	p->atlas.flags = 0;
 	p->atlas.on_rq = 0;
 	p->atlas.job = NULL;

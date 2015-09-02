@@ -1198,7 +1198,6 @@ struct sched_entity {
 enum atlas_classes { ATLAS = 0, RECOVER = 1, CFS = 2, NR_CLASSES };
 
 struct sched_atlas_entity {
-	struct list_head list;   /*for initialization*/
 	unsigned long flags;
 	unsigned int on_rq;
 
