@@ -187,7 +187,7 @@ extern struct task_group root_task_group;
 #define INIT_ATLAS(tsk)                                                        \
 	.atlas = {                                                             \
 		.list = LIST_HEAD_INIT(tsk.atlas.list),                        \
-		.flags = ATLAS_INIT,                                           \
+		.flags = 0,                                                    \
 		.on_rq = 0,                                                    \
 		.job = NULL,                                                   \
 		.jobs = LIST_HEAD_INIT(tsk.atlas.jobs),                        \
