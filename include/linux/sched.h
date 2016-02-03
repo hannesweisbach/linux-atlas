@@ -1210,6 +1210,12 @@ struct sched_atlas_entity {
 	cpumask_t last_mask;
 	int last_cpu;
 
+	struct atlas_thread_pool *tp;
+	struct list_head tp_list;
+
+	s64 horizon;
+	s64 reservation;
+
 	struct hrtimer timer;
 };
 #endif

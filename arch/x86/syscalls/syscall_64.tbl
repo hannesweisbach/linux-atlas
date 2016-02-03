@@ -333,6 +333,10 @@
 324	64	atlas_submit		sys_atlas_submit
 325	common	atlas_update		sys_atlas_update
 326	common	atlas_remove		sys_atlas_remove
+327	common	atlas_tp_create		sys_atlas_tp_create
+328	common	atlas_tp_destroy	sys_atlas_tp_destroy
+329	common	atlas_tp_join		sys_atlas_tp_join
+330	common	atlas_tp_submit		sys_atlas_tp_submit
 
 #
 # x32-specific system call numbers start at 512 to avoid cache impact

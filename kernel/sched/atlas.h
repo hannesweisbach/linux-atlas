@@ -11,12 +11,21 @@
 
 struct atlas_job_tree;
 
-//needs to be defined here because of trace stuff
+struct atlas_thread_pool {
+	uint64_t id;
+	struct list_head pools;
+	raw_spinlock_t lock;
+	uint64_t task_count;
+	struct list_head tasks;
+	struct cpumask cpus;
+};
+
 struct atlas_job {
 	struct list_head list;
 	struct rb_node rb_node;
 	struct atlas_job_tree *tree;
 	struct task_struct *tsk;
+	struct atlas_thread_pool *thread_pool;
 	/* requested exectime (duration) */
 	ktime_t exectime;
 	/* requested deadline (time point) */

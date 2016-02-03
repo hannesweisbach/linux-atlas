@@ -194,6 +194,10 @@ extern struct task_group root_task_group;
 		.last_mask = CPU_MASK_NONE,                                    \
 		.nr_jobs = {0},                                                \
 		.last_cpu = -1,                                                \
+		.tp = NULL,                                                    \
+		.tp_list = LIST_HEAD_INIT(tsk.atlas.tp_list),                  \
+		.horizon = 0,                                                  \
+		.reservation = 0,                                              \
 	},
 #else
 #define INIT_ATLAS(tsk)
