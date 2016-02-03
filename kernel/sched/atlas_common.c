@@ -62,6 +62,8 @@ static const char *flag2string(enum debug flag)
 		return "partition";
 	case RUNQUEUE:
 		return "runqueue";
+	case THREADPOOL:
+		return "threadpool";
 	default:
 		BUG();
 	}
