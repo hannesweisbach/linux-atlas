@@ -29,6 +29,7 @@ enum debug {
 	PENDING_WORK,
 	PARTITION,
 	RUNQUEUE,
+	THREADPOOL,
 	NUM_FLAGS
 };
 

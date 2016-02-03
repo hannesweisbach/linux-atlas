@@ -42,6 +42,9 @@ unsigned int sysctl_sched_atlas_idle_job_stealing = 0;
 unsigned int sysctl_sched_atlas_wakeup_balancing = 0;
 unsigned int sysctl_sched_atlas_overload_push = 0;
 
+static struct list_head thread_pools = LIST_HEAD_INIT(thread_pools);
+static DEFINE_RAW_SPINLOCK(thread_pools_lock);
+
 static inline void inc_nr_running(struct atlas_job_tree *tree)
 {
 	if (tree != &tree->rq->atlas.jobs[CFS] && tree->nr_running == 0) {
@@ -418,6 +421,7 @@ job_alloc(const uint64_t id, const ktime_t exectime, const ktime_t deadline)
 	job->rexectime = ktime_set(0, 0);
 	job->id = id;
 	job->tsk = NULL;
+	job->thread_pool = NULL;
 	job->tree = NULL;
 	job->class = ATLAS;
 	job->original_cpu = -1;
@@ -694,43 +698,90 @@ static bool has_migrated_job(struct task_struct *task)
 	return false;
 }
 
+static int original_cpu(struct task_struct *task)
+{
+	struct rq *rq = task_rq(task);
+	struct atlas_job *j;
+
+	lockdep_assert_held(&rq->atlas.lock);
+
+	list_for_each_entry(j, &task->atlas.jobs, list)
+	{
+		if (j->original_cpu != -1)
+			return j->original_cpu;
+	}
+
+	return -1;
+}
+
+static struct task_struct *
+thread_pool_worker_for_cpu(struct atlas_thread_pool *tp, const int cpu);
+static void thread_pool_insert_job(struct atlas_job *job);
+
 /* migrates this job and all previously running jobs (expected to be in CFS
  * and/or Recover.
  */
-static void migrate_job(struct atlas_job *job, struct atlas_rq *to)
+static void migrate_job(struct atlas_job *job, const int to)
 {
 	unsigned long flags;
-	struct atlas_job *j;
+	struct atlas_rq *to_rq = &cpu_rq(to)->atlas;
 	struct sched_atlas_entity *atlas_se = &job->tsk->atlas;
 
-	spin_lock_irqsave(&atlas_se->jobs_lock, flags);
-	list_for_each_entry(j, &atlas_se->jobs, list)
-	{
-		if (j->original_cpu == -1)
-			j->original_cpu = cpu_of(j->tree->rq);
-		move_job_between_rqs(j, to);
+	if (job->thread_pool == NULL) {
+		struct atlas_job *j;
 
-		if (j == job)
-			break;
+		spin_lock_irqsave(&atlas_se->jobs_lock, flags);
+		list_for_each_entry(j, &atlas_se->jobs, list)
+		{
+			if (j->original_cpu == -1)
+				j->original_cpu = cpu_of(j->tree->rq);
+			move_job_between_rqs(j, to_rq);
+
+			if (j == job)
+				break;
+		}
+		spin_unlock_irqrestore(&atlas_se->jobs_lock, flags);
+	} else {
+		struct atlas_thread_pool *tp = job->thread_pool;
+#ifdef SCHED_ATLAS_TRACE
+		trace_atlas_job_migrate(job);
+#endif
+		if (job_in_rq(job))
+			remove_job_from_tree(job);
+
+		spin_lock_irqsave(&atlas_se->jobs_lock, flags);
+		list_del(&job->list);
+		spin_unlock_irqrestore(&atlas_se->jobs_lock, flags);
+
+		raw_spin_lock(&tp->lock);
+		job->tsk = thread_pool_worker_for_cpu(job->thread_pool, to);
+		thread_pool_insert_job(job);
+		insert_job_into_tree(to_rq, job);
+#ifdef SCHED_ATLAS_TRACE
+		trace_atlas_job_migrated(job);
+#endif
+
+		raw_spin_unlock(&tp->lock);
 	}
-	spin_unlock_irqrestore(&atlas_se->jobs_lock, flags);
 }
 
 /* almost verbatim from fair.c */
-static void detach_task(struct task_struct *p, int next_cpu)
+static void detach_task(struct task_struct *p)
 {
 	struct rq *rq = task_rq(p);
 	lockdep_assert_held(&rq->lock);
+	BUG_ON(!task_on_rq_queued(p));
 
 	deactivate_task(rq, p, 0);
 	p->on_rq = TASK_ON_RQ_MIGRATING;
-	set_task_cpu(p, next_cpu);
 }
 
-static void attach_task(struct task_struct *p, struct rq *rq)
+static void attach_task(struct task_struct *p, int new_cpu)
 {
+	struct rq *rq = cpu_rq(new_cpu);
 	lockdep_assert_held(&rq->lock);
 
+	set_task_cpu(p, new_cpu);
 	BUG_ON(task_rq(p) != rq);
 	p->on_rq = TASK_ON_RQ_QUEUED;
 	activate_task(rq, p, 0);
@@ -742,20 +793,43 @@ static bool can_migrate_task(struct atlas_job *job, int new_cpu)
 	struct task_struct *task = job->tsk;
 	struct rq *rq = task_rq(task);
 
+	lockdep_assert_held(&rq->lock);
 	lockdep_assert_held(&job->tree->rq->lock);
 	lockdep_assert_held(&job->tree->rq->atlas.lock);
 
-	if (!cpumask_test_cpu(new_cpu, &task->atlas.last_mask)) {
+#if 0
+	if (task->policy != SCHED_ATLAS)
+		return false;
+#endif
+	if(job->original_cpu != -1)
+		return false;
+
+	if(task_cpu(task) != cpu_of(job->tree->rq))
+		return false;
+
+	if(task->on_rq == TASK_ON_RQ_MIGRATING)
+		return false;
+
+	if (!cpumask_test_cpu(new_cpu, &task->atlas.last_mask) ||
+	    (job->thread_pool != NULL &&
+	     !cpumask_test_cpu(new_cpu, &job->thread_pool->cpus))) {
 		schedstat_inc(task, se.statistics.nr_failed_migrations_affine);
 		return false;
 	}
 
-	if (task_running(rq, task)) {
+	if ((task_running(rq, task) || (task->state == TASK_WAKING) || !task_on_rq_queued(task)) &&
+	    task->atlas.tp == NULL) {
 		schedstat_inc(task, se.statistics.nr_failed_migrations_running);
 		return false;
 	}
 
 	if (has_migrated_job(task))
+		return false;
+
+	if (task->atlas.tp != NULL && job->started)
+		return false;
+
+	if (!rq_has_capacity(&cpu_rq(new_cpu)->atlas, job))
 		return false;
 
 	return true;
@@ -780,8 +854,12 @@ static struct task_struct *try_migrate_from_cpu(const int cpu)
 	for_each_job(job, &atlas_rq->jobs[ATLAS])
 	{
 		if (can_migrate_task(job, this_cpu)) {
-			atlas_debug(PARTITION, "LB " JOB_FMT, JOB_ARG(job));
-			migrate_job(job, this_rq);
+			atlas_debug(PARTITION,
+				    "LB " JOB_FMT " from %d to %d %*pb %*pb",
+				    JOB_ARG(job), cpu, this_cpu,
+				    cpumask_pr_args(tsk_cpus_allowed(job->tsk)),
+				    cpumask_pr_args(&job->tsk->atlas.last_mask));
+			migrate_job(job, this_cpu);
 			migrated_task = job->tsk;
 			break;
 		}
@@ -790,17 +868,27 @@ static struct task_struct *try_migrate_from_cpu(const int cpu)
 	raw_spin_unlock(&atlas_rq->lock);
 	raw_spin_unlock(&this_rq->lock);
 
-	if (migrated_task != NULL && task_cpu(migrated_task) != this_cpu) {
+	if (migrated_task != NULL && task_cpu(migrated_task) != this_cpu &&
+	    migrated_task->atlas.tp == NULL) {
 		set_bit(ATLAS_MIGRATE_NO_JOBS, &migrated_task->atlas.flags);
 #ifdef CONFIG_ATLAS_MIGRATE
 		atlas_trace_probe_detach(NULL);
 #endif
-		detach_task(migrated_task, this_cpu);
+		detach_task(migrated_task);
 #ifdef CONFIG_ATLAS_MIGRATE
 		atlas_trace_probe_detached(NULL);
+#endif
+
+		/* affinity_mask get's updated by set_task_cpu by way of calling
+		 * migrate_task_rq() for ATLAS tasks */
+		if (!atlas_task(migrated_task)) {
+			update_affinity_mask(migrated_task, this_cpu);
+		}
+
+#ifdef CONFIG_ATLAS_MIGRATE
 		atlas_trace_probe_attach(NULL);
 #endif
-		attach_task(migrated_task, cpu_rq(this_cpu));
+		attach_task(migrated_task, this_cpu);
 #ifdef CONFIG_ATLAS_MIGRATE
 		atlas_trace_probe_attached(NULL);
 #endif
@@ -811,6 +899,13 @@ static struct task_struct *try_migrate_from_cpu(const int cpu)
 
 	preempt_enable();
 	local_irq_restore(flags);
+
+	/* migrated task might be the local thread pool task, but tmfc() might
+	 * have been called while this task is still current, for example in
+	 * schedule() in atlas_next(). */
+	if ((migrated_task != NULL) && task_current(this_rq(), migrated_task) &&
+	    test_bit(ATLAS_BLOCKED, &migrated_task->atlas.flags))
+		wake_up_process(migrated_task);
 
 	return migrated_task;
 }
@@ -1023,6 +1118,241 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 
 	return HRTIMER_NORESTART;
+}
+
+static struct atlas_thread_pool *thread_pool_alloc(void)
+{
+	unsigned long flags;
+	struct atlas_thread_pool *tp =
+			kmalloc(sizeof(struct atlas_thread_pool), GFP_KERNEL);
+	if (tp == NULL)
+		goto out;
+
+	tp->id = (uint64_t)tp;
+	INIT_LIST_HEAD(&tp->pools);
+	raw_spin_lock_init(&tp->lock);
+	tp->task_count = 0;
+	INIT_LIST_HEAD(&tp->tasks);
+	cpumask_clear(&tp->cpus);
+
+	raw_spin_lock_irqsave(&thread_pools_lock, flags);
+	list_add_tail(&tp->pools, &thread_pools);
+	raw_spin_unlock_irqrestore(&thread_pools_lock, flags);
+
+out:
+	return tp;
+}
+
+static void thread_pool_destroy(struct atlas_thread_pool *tp)
+{
+	BUG_ON(tp == NULL);
+	BUG_ON(tp->task_count != 0);
+	BUG_ON(!list_empty(&tp->tasks));
+	lockdep_assert_held(&thread_pools_lock);
+
+	tp->id = 0xdeadbabe;
+	list_del(&tp->pools);
+
+	kfree(tp);
+}
+
+static struct atlas_thread_pool *find_thread_pool(const uint64_t id)
+{
+	struct atlas_thread_pool *tp;
+	lockdep_assert_held(&thread_pools_lock);
+
+	list_for_each_entry(tp, &thread_pools, pools)
+	{
+		if (tp->id == id)
+			return tp;
+	}
+
+	return NULL;
+}
+
+static struct task_struct *
+thread_pool_worker_for_cpu(struct atlas_thread_pool *tp, const int cpu)
+{
+	struct sched_atlas_entity *atlas_se;
+	lockdep_assert_held(&tp->lock);
+
+	list_for_each_entry(atlas_se, &tp->tasks, tp_list)
+	{
+		struct task_struct *task = atlas_task_of(atlas_se);
+		if (task_cpu(task) == cpu)
+			return task;
+	}
+
+	BUG();
+}
+
+static void thread_pool_insert_job(struct atlas_job *job)
+{
+	unsigned long flags;
+	struct sched_atlas_entity *atlas_se;
+	struct atlas_job *curr;
+
+	bool inserted = false;
+
+	lockdep_assert_held(&job->thread_pool->lock);
+	BUG_ON(job->tsk == NULL);
+
+	atlas_se = &job->tsk->atlas;
+
+	spin_lock_irqsave(&atlas_se->jobs_lock, flags);
+
+	list_for_each_entry_reverse(curr, &atlas_se->jobs, list)
+	{
+		if (ktime_before(curr->deadline, job->deadline) ||
+		    curr->started) {
+			list_add(&job->list, &curr->list);
+			inserted = true;
+			break;
+		}
+	}
+
+	/* - job list might have been empty
+	 * - new job might have the newest deadline & no other job has been
+	 *   started
+	 */
+	if (!inserted)
+		list_add(&job->list, &atlas_se->jobs);
+
+	spin_unlock_irqrestore(&atlas_se->jobs_lock, flags);
+}
+
+static void dump_thread_pools(void)
+{
+#if defined(DEBUG)
+	unsigned long flags;
+	struct atlas_thread_pool *tp;
+	struct sched_atlas_entity *atlas_se;
+
+	raw_spin_lock_irqsave(&thread_pools_lock, flags);
+	list_for_each_entry(tp, &thread_pools, pools)
+	{
+		atlas_debug(THREADPOOL, "%llu has %llu tasks:", tp->id,
+			    tp->task_count);
+		raw_spin_lock(&tp->lock);
+		list_for_each_entry(atlas_se, &tp->tasks, tp_list)
+		{
+			struct atlas_job *job;
+			struct task_struct *task = atlas_task_of(atlas_se);
+			atlas_debug(THREADPOOL, "  %s/%d", task->comm,
+				    task_tid(task));
+			list_for_each_entry(job, &atlas_se->jobs, list)
+			{
+				atlas_debug(THREADPOOL, "    " JOB_FMT,
+					    JOB_ARG(job));
+			}
+		}
+		raw_spin_unlock(&tp->lock);
+	}
+	raw_spin_unlock_irqrestore(&thread_pools_lock, flags);
+#endif
+}
+
+static void thread_pool_add_worst_fit__(struct atlas_thread_pool *tp,
+					struct atlas_job *job, const bool task)
+{
+	struct sched_atlas_entity *atlas_se;
+	ktime_t min_dbf = ktime_set(KTIME_SEC_MAX, 0);
+
+	list_for_each_entry(atlas_se, &tp->tasks, tp_list)
+	{
+		struct task_struct *task = atlas_task_of(atlas_se);
+		ktime_t dbf;
+		if (task)
+			dbf = task_dbf(task, job->deadline);
+		else
+			dbf = rq_dbf(atlas_rq_of(task), job->deadline);
+		if (ktime_compare(dbf, min_dbf) < 0) {
+			min_dbf = dbf;
+			job->tsk = task;
+		}
+	}
+}
+
+static void thread_pool_add(struct atlas_thread_pool *tp, struct atlas_job *job)
+{
+	BUG_ON(job->tsk != NULL);
+	lockdep_assert_held(&tp->lock);
+
+	job->thread_pool = tp;
+
+	/* TODO: dispatch on sysctl variable */
+	thread_pool_add_worst_fit__(tp, job, true);
+	thread_pool_insert_job(job);
+}
+
+static void thread_pool_leave(struct sched_atlas_entity *atlas_se)
+{
+	unsigned long flags;
+	struct atlas_thread_pool *tp = atlas_se->tp;
+	
+	BUG_ON(!test_bit(ATLAS_EXIT, &atlas_se->flags));
+
+	if (tp == NULL)
+		return;
+
+	raw_spin_lock_irqsave(&tp->lock, flags);
+	list_del(&atlas_se->tp_list);
+	atlas_se->tp = NULL;
+	--tp->task_count;
+	cpumask_clear_cpu(smp_processor_id(), &tp->cpus);
+	raw_spin_unlock_irqrestore(&tp->lock, flags);
+
+	if (!list_empty(&tp->tasks)) {
+		struct atlas_job *job;
+		struct atlas_job *tmp;
+		struct list_head moved_jobs = LIST_HEAD_INIT(moved_jobs);
+		/* thread pool tasks don't migrate */
+		struct atlas_rq *curr_rq =
+				&task_rq(atlas_task_of(atlas_se))->atlas;
+
+		raw_spin_lock_irqsave(&curr_rq->lock, flags);
+		spin_lock(&atlas_se->jobs_lock);
+		list_for_each_entry_safe(job, tmp, &atlas_se->jobs, list)
+		{
+			if (job->thread_pool == tp && !job->started) {
+				atlas_debug(THREADPOOL, "Moving " JOB_FMT
+							" from exiting task.",
+					    JOB_ARG(job));
+				list_del(&job->list);
+				list_add_tail(&job->list, &moved_jobs);
+				if (job_in_rq(job))
+					remove_job_from_tree(job);
+				job->tsk = NULL;
+			}
+		}
+		spin_unlock(&atlas_se->jobs_lock);
+		raw_spin_unlock_irqrestore(&curr_rq->lock, flags);
+
+		list_for_each_entry_safe(job, tmp, &moved_jobs, list)
+		{
+			struct atlas_rq *next_rq;
+			bool added = false;
+
+			list_del(&job->list);
+			raw_spin_lock_irqsave(&tp->lock, flags);
+			if (tp->task_count > 0) {
+				thread_pool_add(tp, job);
+				added = true;
+			}
+			raw_spin_unlock_irqrestore(&tp->lock, flags);
+
+			if (!added)
+				return;
+
+			next_rq = &task_rq(job->tsk)->atlas;
+			raw_spin_lock_irqsave(&next_rq->lock, flags);
+			insert_job_into_tree(next_rq, job);
+			raw_spin_unlock_irqrestore(&next_rq->lock, flags);
+			if (test_bit(ATLAS_BLOCKED, &job->tsk->atlas.flags))
+				wake_up_process(job->tsk);
+		}
+	}
+
 }
 
 static const char *sched_name(int policy)
@@ -1950,6 +2280,8 @@ void exit_atlas(struct task_struct *p)
 
 	set_bit(ATLAS_EXIT, &p->atlas.flags);
 
+	thread_pool_leave(&p->atlas);
+
 	for (; task_has_jobs(p);)
 		destroy_first_job(p);
 
@@ -2510,5 +2842,141 @@ SYSCALL_DEFINE2(atlas_remove, pid_t, pid, uint64_t, id)
 
 out:
 	rcu_read_unlock();
+	return ret;
+}
+
+SYSCALL_DEFINE1(atlas_tp_create, uint64_t *, id)
+{
+	struct atlas_thread_pool *tp;
+
+	if (id == NULL)
+		return -EINVAL;
+
+	tp = thread_pool_alloc();
+	if (tp == NULL)
+		return -ENOMEM;
+
+	if (copy_to_user(id, &tp->id, sizeof(uint64_t))) {
+		unsigned long flags;
+		raw_spin_lock_irqsave(&thread_pools_lock, flags);
+		thread_pool_destroy(tp);
+		raw_spin_unlock_irqrestore(&thread_pools_lock, flags);
+		return -EFAULT;
+	}
+
+	return 0;
+}
+
+SYSCALL_DEFINE1(atlas_tp_destroy, const uint64_t, id)
+{
+	unsigned long flags;
+	long ret = 0;
+
+	struct atlas_thread_pool *tp;
+
+	raw_spin_lock_irqsave(&thread_pools_lock, flags);
+	dump_thread_pools();
+	tp = find_thread_pool(id);
+	if (tp == NULL) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (!list_empty(&tp->tasks)) {
+		ret = -EBUSY;
+		goto out;
+	}
+
+	thread_pool_destroy(tp);
+	raw_spin_unlock_irqrestore(&thread_pools_lock, flags);
+
+	return ret;
+
+out:
+	raw_spin_unlock_irqrestore(&thread_pools_lock, flags);
+
+	return ret;
+}
+
+SYSCALL_DEFINE1(atlas_tp_join, const uint64_t, id)
+{
+	unsigned long flags;
+	long ret = 0;
+
+	struct atlas_thread_pool *tp;
+
+	if (current->atlas.tp != NULL || current->nr_cpus_allowed > 1)
+		return -EBUSY;
+
+	raw_spin_lock_irqsave(&thread_pools_lock, flags);
+	dump_thread_pools();
+	tp = find_thread_pool(id);
+	if (tp == NULL) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	current->atlas.tp = tp;
+	list_add_tail(&current->atlas.tp_list, &tp->tasks);
+	++tp->task_count;
+	cpumask_set_cpu(smp_processor_id(), &tp->cpus);
+
+out:
+	raw_spin_unlock_irqrestore(&thread_pools_lock, flags);
+
+	return ret;
+}
+
+SYSCALL_DEFINE4(atlas_tp_submit, uint64_t, tpid, uint64_t, id, struct timeval
+    __user *, exectime, struct timeval __user *, deadline)
+{
+	unsigned long flags;
+	struct timeval lexectime;
+	struct timeval ldeadline;
+	struct atlas_job *job;
+	struct atlas_thread_pool *tp;
+	int ret = 0;
+
+	if (copy_from_user(&lexectime, exectime, sizeof(struct timeval)) ||
+	    copy_from_user(&ldeadline, deadline, sizeof(struct timeval))) {
+		atlas_debug_(SYS_SUBMIT, "Invalid struct timeval pointers.");
+		return -EFAULT;
+	}
+
+	job = job_alloc(id, timeval_to_ktime(lexectime),
+			timeval_to_ktime(ldeadline));
+	if (!job) {
+		atlas_debug_(SYS_SUBMIT, "Could not allocate job structure.");
+		return -ENOMEM;
+	}
+
+	raw_spin_lock_irqsave(&thread_pools_lock, flags);
+	dump_thread_pools();
+	tp = find_thread_pool(tpid);
+	if (tp == NULL) {
+		atlas_debug_(THREADPOOL,
+			     "Could not find thread pool with ID %0llx", tpid);
+		ret = -EINVAL;
+		goto err;
+	}
+
+	if (tp->task_count == 0) {
+		atlas_debug_(THREADPOOL,
+			     "Thread pool with ID %0llx has no tasks.", tpid);
+		ret = -EBUSY;
+		goto err;
+	}
+
+	raw_spin_lock(&tp->lock);
+	thread_pool_add(tp, job);
+	raw_spin_unlock(&tp->lock);
+	schedule_job(job);
+
+	dump_thread_pools();
+	raw_spin_unlock_irqrestore(&thread_pools_lock, flags);
+	return 0;
+err:
+	job_dealloc(job);
+	raw_spin_unlock_irqrestore(&thread_pools_lock, flags);
 	return ret;
 }
