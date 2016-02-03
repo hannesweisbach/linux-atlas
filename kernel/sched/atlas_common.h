@@ -84,7 +84,9 @@ static inline const char *job_rq_name(struct atlas_job *job)
 
 static inline const char *task_sched_name(struct task_struct *tsk)
 {
-	if (tsk->sched_class == &stop_sched_class)
+	if (tsk == NULL)
+		return "(null)";
+	else if (tsk->sched_class == &stop_sched_class)
 		return "STOP";
 	else if (tsk->sched_class == &dl_sched_class)
 		return "DEADLINE";
@@ -111,6 +113,21 @@ static unsigned rq_nr_jobs(const struct rb_root *root)
 	return nr_jobs;
 }
 
+static unsigned task_nr_jobs(struct task_struct *tsk)
+{
+	unsigned nr_jobs = 0;
+	struct rq * rq = task_rq(tsk);
+	struct atlas_rq * atlas_rq = &rq->atlas;
+	struct atlas_job * job;
+
+	for (job = pick_first_job(&atlas_rq->jobs[ATLAS]); job;
+	     job = pick_next_job(job)) {
+		nr_jobs += job->tsk == tsk;
+	}
+
+	return nr_jobs;
+}
+
 static inline pid_t task_tid(struct task_struct *tsk)
 {
 	struct pid_namespace *ns;
@@ -123,7 +140,7 @@ static inline pid_t task_tid(struct task_struct *tsk)
 		return task_pid_nr(tsk);
 }
 
-extern void sched_log(const char *fmt, ...);
+void debug_rq(struct rq *rq);
 
 #define RQ_FMT "%d (%d %u/%lu %d/%d/%d %d)%s"
 #define RQ_ARG(rq)                                                             \
@@ -135,7 +152,8 @@ extern void sched_log(const char *fmt, ...);
 			(rq->atlas.timer_target == ATLAS_SLACK) ? " (slack)"   \
 								: ""
 
-#define JOB_FMT "Job %s/%d/%lld (e: %lld/%lld/%lld, d: %lld/%lld, %s %d)"
+#define JOB_FMT                                                                \
+	"Job %s/%d/%lld (e: %lld/%lld/%lld, d: %lld/%lld, %s/%s %d/%d%s)"
 #define JOB_ARG(job)                                                           \
 	(job) ? (job)->tsk->comm : "(none)", (job) ? task_tid(job->tsk) : 0,   \
 			(job) ? job->id : -1,                                  \
@@ -144,7 +162,10 @@ extern void sched_log(const char *fmt, ...);
 			(job) ? ktime_to_ms((job)->exectime) : -1,             \
 			(job) ? ktime_to_ms((job)->sdeadline) : -1,            \
 			(job) ? ktime_to_ms((job)->deadline) : -1,             \
-			job_rq_name(job), job->original_cpu
+			(job) ? task_sched_name(job->tsk) : "(no job)",        \
+			job_rq_name(job), (job) ? job->original_cpu : 0,       \
+			((job) && (job)->tsk) ? task_cpu((job)->tsk) : -1,     \
+			((job) && (job)->started) ? " started" : ""
 
 #define atlas_debug_(flag, fmt, ...)                                           \
 	do {                                                                   \
@@ -157,10 +178,11 @@ extern void sched_log(const char *fmt, ...);
 #define atlas_debug(flag, fmt, ...)                                            \
 	do {                                                                   \
 		if (is_flag_enabled(flag)) {                                   \
-			printk_deferred(KERN_DEBUG "CPU %d/%d [" #flag         \
+			printk_deferred(KERN_DEBUG "CPU %d/%d/%s [" #flag      \
 						   "](%d): " fmt "\n",         \
 					smp_processor_id(), task_tid(current), \
-					__LINE__, ##__VA_ARGS__);              \
+					task_sched_name(current), __LINE__,    \
+					##__VA_ARGS__);                        \
 		}                                                              \
 	} while (0)
 

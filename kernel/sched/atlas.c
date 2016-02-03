@@ -9,6 +9,7 @@
 #include <linux/sched.h>
 #include <linux/list.h>
 #include <linux/spinlock.h>
+#include <linux/spinlock_types.h>
 #include <linux/rcupdate.h>
 #include <linux/cpumask.h>
 #include <linux/init.h>
@@ -36,14 +37,66 @@
 
 const struct sched_class atlas_sched_class;
 
-unsigned int sysctl_sched_atlas_min_slack      = 1000000ULL;
-unsigned int sysctl_sched_atlas_advance_in_cfs = 0;
+unsigned int sysctl_sched_atlas_min_slack = 1000000ULL;
+unsigned int sysctl_sched_atlas_advance_in_cfs = 1;
+
 unsigned int sysctl_sched_atlas_idle_job_stealing = 0;
 unsigned int sysctl_sched_atlas_wakeup_balancing = 0;
 unsigned int sysctl_sched_atlas_overload_push = 0;
 
 static struct list_head thread_pools = LIST_HEAD_INIT(thread_pools);
 static DEFINE_RAW_SPINLOCK(thread_pools_lock);
+
+void debug_output(struct task_struct *p, struct atlas_job *job, int cpu)
+{
+#if defined(DEBUG) || 1
+	printk_deferred(KERN_ERR "%s/%d " JOB_FMT
+				 " %d %d %*pb %*pb %s empty list: %d\n",
+			p->comm, task_tid(p), JOB_ARG(job), task_cpu(p), cpu,
+			cpumask_pr_args(&p->cpus_allowed),
+			cpumask_pr_args(&p->atlas.last_mask),
+			task_sched_name(p), list_empty(&p->atlas.jobs));
+#if 1
+	debug_rq(cpu_rq(0));
+	debug_rq(cpu_rq(1));
+#else
+	debug_rq(task_rq(p));
+#endif
+#endif
+}
+
+
+static void check_rq_consistency(const struct rq *const rq)
+{
+#if defined(DEBUG) && 0
+	const struct atlas_rq *const atlas_rq = &rq->atlas;
+	if (rq->nr_running !=
+	    (atlas_rq->jobs[ATLAS].nr_running +
+	     atlas_rq->jobs[RECOVER].nr_running + rq->cfs.h_nr_running +
+	     rq->rt.rt_nr_running + rq->dl.dl_nr_running)) {
+		printk(KERN_ERR "%d %d %lu %d/%d %u\n", rq->nr_running,
+		       rq->rt.rt_nr_running, rq->dl.dl_nr_running,
+		       atlas_rq->jobs[ATLAS].nr_running,
+		       atlas_rq->jobs[RECOVER].nr_running,
+		       rq->cfs.h_nr_running);
+		//BUG();
+	}
+#endif
+}
+
+static void check_task_consistency(struct task_struct *p, struct atlas_job *job)
+{
+#if defined(DEBUG) && 0
+	if ((task_cpu(p) != p->wake_cpu) ||
+	    (!cpumask_test_cpu(task_cpu(p), tsk_cpus_allowed(p))) ||
+	    (!cpumask_test_cpu(p->wake_cpu, tsk_cpus_allowed(p))) ||
+	    (!list_empty(&p->atlas.jobs) &&
+	     (cpumask_weight(tsk_cpus_allowed(p)) > 1))) {
+		debug_output(p, job, p->wake_cpu);
+		WARN_ON(1);
+	}
+#endif
+}
 
 static bool has_migrated_job(struct task_struct *task);
 
@@ -100,22 +153,28 @@ static void update_affinity_mask(struct task_struct *p, int new_cpu)
 
 static inline void inc_nr_running(struct atlas_job_tree *tree)
 {
+	check_rq_consistency(tree->rq);
 	if (tree != &tree->rq->atlas.jobs[CFS] && tree->nr_running == 0) {
+		lockdep_assert_held(&tree->rq->lock);
 		add_nr_running(tree->rq, 1);
 		tree->nr_running = 1;
 	} else if (tree == &tree->rq->atlas.jobs[CFS]) {
 		tree->nr_running += 1;
 	}
+	check_rq_consistency(tree->rq);
 }
 
 static inline void dec_nr_running(struct atlas_job_tree *tree)
 {
+	check_rq_consistency(tree->rq);
 	if (tree != &tree->rq->atlas.jobs[CFS] && tree->nr_running == 1) {
+		lockdep_assert_held(&tree->rq->lock);
 		sub_nr_running(tree->rq, 1);
 		tree->nr_running = 0;
 	} else if (tree == &tree->rq->atlas.jobs[CFS]) {
 		tree->nr_running -= 1;
 	}
+	check_rq_consistency(tree->rq);
 }
 
 static inline bool not_runnable(struct atlas_job_tree *tree)
@@ -262,7 +321,7 @@ static ktime_t task_dbf(struct task_struct *task, const ktime_t t)
 	return demand;
 }
 
-static ktime_t rq_dbf(struct atlas_rq *atlas_rq, const ktime_t t)
+static ktime_t rq_dbf(const struct atlas_rq const *atlas_rq, const ktime_t t)
 {
 	enum atlas_classes class;
 	ktime_t demand = ktime_set(0, 0);
@@ -280,12 +339,41 @@ static ktime_t rq_dbf(struct atlas_rq *atlas_rq, const ktime_t t)
 				demand = ktime_add(
 						demand,
 						required_execution_time(job));
-			else
+			else {
+				atlas_debug(PARTITION,
+					    "Stopping RQ dbf: %lld, %lld %llu",
+					    ktime_to_ns(job->deadline),
+					    ktime_to_ns(t), job->id);
 				break;
+			}
 		}
 	}
 
 	return demand;
+}
+
+static ktime_t rq_cbf(const struct atlas_rq const *atlas_rq, const ktime_t t)
+{
+	const ktime_t demand = rq_dbf(atlas_rq, t);
+	const ktime_t capacity = ktime_sub(t, ktime_get());
+
+#if 0
+	atlas_debug(PARTITION, "Capacity: %lld, Demand: %lld, Rem: %lld",
+		    ktime_to_ms(capacity), ktime_to_ms(demand),
+		    ktime_to_ms(ktime_sub(capacity, demand)));
+#endif
+	return ktime_sub(capacity, demand);
+}
+
+static bool rq_has_capacity(const struct atlas_rq const *atlas_rq,
+			    const struct atlas_job const *job)
+{
+#if 0
+	atlas_debug(PARTITION, "Req exec time: %lld",
+		    ktime_to_ms(required_execution_time(job)));
+#endif
+	return ktime_compare(rq_cbf(atlas_rq, job->deadline),
+			     required_execution_time(job)) >= 0;
 }
 
 static ktime_t min_rq_horizon(void)
@@ -382,6 +470,10 @@ static int worst_fit_rq(struct task_struct *task)
 			demand = ktime_sub(demand, task_demand);
 		}
 
+		debug_rq(cpu_rq(cpu));
+		atlas_debug(PARTITION, "RQ %d dbf: %lld t: %lld", cpu,
+			    ktime_to_ns(demand), ktime_to_ns(t));
+
 		if (ktime_compare(demand, min_demand) < 0) {
 			min_demand = demand;
 			min_cpu = cpu;
@@ -422,6 +514,7 @@ static bool rq_overloaded(const struct atlas_rq const *atlas_rq)
 	return ktime_compare(rq_load(atlas_rq), ktime_set(0, 0)) < 0;
 }
 
+#if 0
 static bool rq_has_capacity(const struct atlas_rq const *atlas_rq,
 			    const struct atlas_job const *job)
 {
@@ -437,10 +530,16 @@ static bool rq_has_capacity(const struct atlas_rq const *atlas_rq,
 	 */
 	return ktime_compare(load, required) <= 0;
 }
+#endif
 
 static inline struct rq *rq_of(struct atlas_rq *atlas_rq)
 {
 	return container_of(atlas_rq, struct rq, atlas);
+}
+
+struct atlas_rq *atlas_rq_of(struct task_struct *task)
+{
+	return &task_rq(task)->atlas;
 }
 
 static void set_job_times(struct atlas_job *job, const ktime_t exectime,
@@ -490,13 +589,15 @@ static inline void job_dealloc(struct atlas_job *job)
 	if (!job)
 		return;
 
-	if (job->tsk) {
+	if (job->tsk && 0) {
 		{ /* check job list */
 			struct sched_atlas_entity *atlas_se = &job->tsk->atlas;
 
 			struct atlas_job *pos;
 			list_for_each_entry(pos, &atlas_se->jobs, list)
 			{
+				atlas_debug(SYS_NEXT, "Checking " JOB_FMT,
+					    JOB_ARG(pos));
 				WARN(pos == job,
 				     JOB_FMT " is still in job list",
 				     JOB_ARG(job));
@@ -555,10 +656,12 @@ static void insert_job_into_tree(struct atlas_rq *dst,
 	tree = &dst->jobs[job->class];
 	link = &tree->jobs.rb_node;
 
+#if 0
 	if (tree->leftmost_job == NULL) { /* tree is empty */
 		atlas_debug(RBTREE, "Added first job to %s.", tree->name);
 		inc_nr_running(tree);
 	}
+#endif
 
 	while (*link) {
 		struct atlas_job *entry =
@@ -580,6 +683,8 @@ static void insert_job_into_tree(struct atlas_rq *dst,
 
 	if (leftmost)
 		tree->leftmost_job = &job->rb_node;
+
+	inc_nr_running(tree);
 
 	if (is_atlas_job(job)) {
 		/* Move from the next task backwards to adjust scheduled
@@ -654,7 +759,7 @@ static void remove_job_from_tree(struct atlas_job *const job)
 	BUG_ON(job == NULL);
 	BUG_ON(job->tree == NULL);
 	BUG_ON(!job_in_rq(job));
-	assert_raw_spin_locked(&job->tree->rq->atlas.lock);
+	lockdep_assert_held(&job->tree->rq->atlas.lock);
 
 	{
 		struct atlas_rq *atlas_rq = &job->tree->rq->atlas;
@@ -713,6 +818,14 @@ static void move_job_between_rqs(struct atlas_job *job, struct atlas_rq *to)
 #endif
 	remove_job_from_tree(job);
 	insert_job_into_tree(to, job);
+
+	/* inc_nr_running in insert_job_into_tree is insufficient.
+	 * The tree might not be runnable (nr_running = 0), but have jobs.
+	 * To schedule the new jobs, inc_nr_running is needed.
+	 */
+	if (not_runnable(job->tree) && has_jobs(job->tree))
+		inc_nr_running(job->tree);
+
 #ifdef SCHED_ATLAS_TRACE
 	trace_atlas_job_migrated(job);
 #endif
@@ -742,8 +855,8 @@ static bool has_migrated_job(struct task_struct *task)
 
 	list_for_each_entry(j, &task->atlas.jobs, list)
 	{
-		if ((j->original_cpu != -1) &&
-		    task_cpu(j->tsk) != smp_processor_id()) {
+		if ((j->original_cpu != -1)/* &&
+		    task_cpu(j->tsk) != smp_processor_id()*/) {
 			return true;
 		}
 	}
@@ -1006,8 +1119,10 @@ static struct task_struct *idle_balance(void)
 static struct task_struct *idle_balance_locked(void)
 {
 	struct rq *rq = this_rq();
-	int nr_running = rq->nr_running;
 	struct task_struct *new_task;
+
+	unsigned int rt_nr_running = rq->rt.rt_nr_running;
+	unsigned long dl_nr_running = rq->dl.dl_nr_running;
 
 	BUG_ON(!irqs_disabled());
 
@@ -1015,8 +1130,10 @@ static struct task_struct *idle_balance_locked(void)
 	new_task = idle_balance();
 	raw_spin_lock(&rq->lock);
 
-	if (new_task && (nr_running + 1) != rq->nr_running)
-		new_task = RETRY_TASK;
+	if (new_task || ((rq->stop != NULL) && task_on_rq_queued(rq->stop)) ||
+	    (dl_nr_running != rq->dl.dl_nr_running) ||
+	    (rt_nr_running != rq->rt.rt_nr_running))
+		return RETRY_TASK;
 
 	return new_task;
 }
@@ -1091,8 +1208,12 @@ static void stop_slack_timer(struct atlas_rq *atlas_rq)
 	if (atlas_rq->timer_target != ATLAS_SLACK)
 		return;
 
+	check_rq_consistency(rq_of(atlas_rq));
 	if (hrtimer_cancel(&atlas_rq->timer)) {
-		inc_nr_running(&atlas_rq->jobs[ATLAS]);
+		if (has_jobs(&atlas_rq->jobs[ATLAS]))
+			inc_nr_running(&atlas_rq->jobs[ATLAS]);
+		if (has_jobs(&atlas_rq->jobs[RECOVER]))
+			inc_nr_running(&atlas_rq->jobs[RECOVER]);
 
 		atlas_rq->timer_target = ATLAS_NONE;
 		atlas_rq->slack_task = NULL;
@@ -1101,6 +1222,7 @@ static void stop_slack_timer(struct atlas_rq *atlas_rq)
 			    JOB_ARG(pick_first_job(&atlas_rq->jobs[ATLAS])));
 	}
 
+	check_rq_consistency(rq_of(atlas_rq));
 	BUG_ON(atlas_rq->timer_target != ATLAS_NONE);
 }
 
@@ -1124,6 +1246,7 @@ static inline void stop_timer(struct atlas_rq *atlas_rq)
 {
 	assert_raw_spin_locked(&atlas_rq->lock);
 
+	check_rq_consistency(rq_of(atlas_rq));
 	switch (atlas_rq->timer_target) {
 	case ATLAS_NONE:
 		break;
@@ -1136,6 +1259,7 @@ static inline void stop_timer(struct atlas_rq *atlas_rq)
 	default:
 		BUG();
 	}
+	check_rq_consistency(rq_of(atlas_rq));
 }
 
 void fixup_atlas_slack(struct atlas_rq *atlas_rq)
@@ -1178,10 +1302,11 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 
 	atlas_rq->timer_target = ATLAS_NONE;
 
-	raw_spin_lock_irqsave(&rq->lock, flags);
-	if (rq->curr)
-		resched_curr(rq);
-	raw_spin_unlock_irqrestore(&rq->lock, flags);
+	if (rq->curr) {
+		atlas_debug(TIMER, "Resched curr %p %d", rq->curr,
+			    smp_processor_id());
+		resched_cpu(cpu_of(rq));
+	}
 
 	return HRTIMER_NORESTART;
 }
@@ -1455,14 +1580,17 @@ static void atlas_set_scheduler(struct rq *rq, struct task_struct *p,
 	int queued, running;
 
 	WARN_ON(task_cpu(p) != rq->cpu);
+	WARN_ON(task_rq(p) != rq);
+
+#ifndef ATLAS_MIGRATE_IN_CFS
+	if (task_cpu(p) != rq->cpu) {
+		debug_output(p, NULL, rq->cpu);
+		set_task_cpu(p, rq->cpu);
+	}
+#endif
 
 	if (p->policy == policy)
 		return;
-
-#ifndef ATLAS_MIGRATE_IN_CFS
-	if (task_cpu(p) != rq->cpu)
-		set_task_cpu(p, rq->cpu);
-#endif
 
 	/* may grab non-irq protected spin_locks */
 	BUG_ON(in_interrupt());
@@ -1619,7 +1747,7 @@ static void update_curr_atlas(struct rq *rq)
 	u64 now = rq_clock_task(rq);
 	u64 delta_exec;
 
-	assert_raw_spin_locked(&rq->lock);
+	lockdep_assert_held(&rq->lock);
 
 	if (unlikely(curr == NULL))
 		return;
@@ -1639,7 +1767,6 @@ static void update_curr_atlas(struct rq *rq)
 
 	{
 		struct task_struct *tsk = curr->tsk;
-		// trace_sched_stat_runtime(curr, delta_exec,
 		cpuacct_charge(tsk, delta_exec);
 		account_group_exec_runtime(tsk, delta_exec);
 	}
@@ -1653,12 +1780,12 @@ static void update_curr_atlas(struct rq *rq)
 				    "Accounting %lldus to " JOB_FMT,
 				    delta_exec / 1000, JOB_ARG(curr));
 
-		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
+		//raw_spin_lock_irqsave(&atlas_rq->lock, flags);
 		curr->rexectime = ktime_add(curr->rexectime, delta);
-		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+		//raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 	}
 #ifdef DEBUG
-	{
+	if (0) {
 		unsigned long flags;
 		struct atlas_job *job;
 		raw_spin_lock_irqsave(&atlas_rq->lock, flags);
@@ -1670,8 +1797,11 @@ static void update_curr_atlas(struct rq *rq)
 				break;
 			if (is_collision(job, next)) {
 				WARN(1, "Collision between jobs " JOB_FMT
-					" and " JOB_FMT,
-				     JOB_ARG(job), JOB_ARG(next));
+					" and " JOB_FMT
+					" sdeadline: %lld, job_start: %lld",
+				     JOB_ARG(job), JOB_ARG(next),
+				     ktime_to_ns(job->sdeadline),
+				     ktime_to_ns(job_start(next)));
 			}
 		}
 		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
@@ -1689,6 +1819,7 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se = &p->atlas;
 
+	check_task_consistency(p, NULL);
 	update_curr_atlas(rq);
 
 	if (atlas_rq->curr && atlas_rq->curr->tsk != p)
@@ -1706,7 +1837,8 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 #endif
 	}
 
-	atlas_debug(ENQUEUE, JOB_FMT "%s%s (%d/%d)", JOB_ARG(atlas_rq->curr),
+	atlas_debug(ENQUEUE, "%s/%d " JOB_FMT "%s%s (%d/%d)", p->comm,
+		    task_tid(p), JOB_ARG(atlas_rq->curr),
 		    (flags & ENQUEUE_WAKEUP) ? " (Wakeup)" : "",
 		    (flags & ENQUEUE_WAKING) ? " (Waking)" : "", rq->nr_running,
 		    atlas_rq->jobs[ATLAS].nr_running);
@@ -1810,8 +1942,6 @@ static bool job_runnable(struct atlas_job *job)
 	/* A job is runnable if its task is not blocked and the task is queued
 	 * on this CPU/RQ (might have been pulled)
 	 */
-	WARN(!task_on_rq_queued(job->tsk) && !task_on_this_rq(job),
-	     JOB_FMT " not runnable and on different RQ.", JOB_ARG(job));
 	return task_on_rq_queued(job->tsk) && task_on_this_rq(job);
 }
 
@@ -1819,13 +1949,16 @@ static struct atlas_job *select_job(struct atlas_job_tree *tree)
 {
 	struct atlas_job *job = NULL;
 
+#if 0
 	if (not_runnable(tree))
 		return job;
+#endif
 
 	for (job = pick_first_job(tree); job && !job_runnable(job);
 	     job = pick_next_job(job)) {
 		struct task_struct *tsk = job->tsk;
-		if (!task_on_rq_queued(tsk) && task_on_this_rq(job)) {
+		if (!task_on_rq_queued(tsk) && task_on_this_rq(job) &&
+		    tsk->state != TASK_WAKING) {
 			atlas_debug(PICK_NEXT_TASK, "Task %s/%d blocked",
 				    tsk->comm, task_tid(tsk));
 			/* Pull the task to ATLAS, to see the wakup event.
@@ -1860,7 +1993,9 @@ void atlas_cfs_blocked(struct rq *rq, struct task_struct *p)
 	BUG_ON(atlas_rq->timer_target != ATLAS_SLACK);
 
 	raw_spin_lock(&atlas_rq->lock);
+	check_rq_consistency(rq);
 	stop_slack_timer(atlas_rq);
+	check_rq_consistency(rq);
 	raw_spin_unlock(&atlas_rq->lock);
 
 	atlas_set_scheduler(rq, p, SCHED_ATLAS);
@@ -1892,6 +2027,9 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 #endif
 			cpumask_test_and_clear_cpu(cpu,
 						   &atlas_rq->overloaded_set);
+			if (rq_overloaded(atlas_rq))
+				continue;
+
 			raw_spin_unlock(&rq->lock);
 			migrated_task = try_migrate_from_cpu(cpu);
 			raw_spin_lock(&rq->lock);
@@ -1901,6 +2039,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 								 cpu);
 #endif
 		}
+		//debug_rq(NULL);
 	}
 
 	if (has_no_jobs(&atlas_rq->jobs[ATLAS]) &&
@@ -1915,6 +2054,8 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	}
 
 	handle_deadline_misses(atlas_rq);
+
+	//debug_rq(NULL);
 
 	if (not_runnable(&atlas_rq->jobs[ATLAS]) &&
 	    not_runnable(&atlas_rq->jobs[RECOVER])) {
@@ -1939,10 +2080,11 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	atlas_job = select_job(&atlas_rq->jobs[ATLAS]);
 	recover_job = select_job(&atlas_rq->jobs[RECOVER]);
 
-	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
+	//raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 
 	atlas_debug(PICK_NEXT_TASK, "Prev: " JOB_FMT, JOB_ARG(prev->atlas.job));
-	atlas_debug(PICK_NEXT_TASK, "Next: " JOB_FMT, JOB_ARG(atlas_job));
+	atlas_debug(PICK_NEXT_TASK, "ATLAS: " JOB_FMT, JOB_ARG(atlas_job));
+	atlas_debug(PICK_NEXT_TASK, "Recover: " JOB_FMT, JOB_ARG(recover_job));
 
 	if (atlas_job == NULL)
 		dec_nr_running(&atlas_rq->jobs[ATLAS]);
@@ -1950,8 +2092,12 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 	if (recover_job == NULL)
 		dec_nr_running(&atlas_rq->jobs[RECOVER]);
 
-	if (atlas_job == NULL && recover_job == NULL)
+	if (atlas_job == NULL && recover_job == NULL) {
+		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 		goto out_notask;
+	}
+
+	//debug_rq();
 
 	if (atlas_job) {
 		ktime_t min_slack = ns_to_ktime(sysctl_sched_atlas_min_slack);
@@ -1962,6 +2108,7 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		if (ktime_compare(slack, min_slack) < 0) {
 			start_job_timer(atlas_rq, atlas_job);
 			job = atlas_job;
+			raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 			goto out_task;
 		}
 	}
@@ -1971,13 +2118,23 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 				  remaining_execution_time(recover_job)) < 0) {
 			/* maybe this is not such a good idea. use the
 			 * job timer with reduced timeout instead? */
+		  	//So this acutally triggered. Let's see if this is bad.
+			//BUG_ON(atlas_rq->jobs[ATLAS].nr_running == 0);
 			start_slack_timer(atlas_rq, atlas_job, slack);
 		} else {
 			start_job_timer(atlas_rq, recover_job);
 		}
 		job = recover_job;
+		raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 		goto out_task;
 	}
+
+#ifdef CONFIG_ATLAS_TRACE
+	trace_atlas_job_slack(atlas_job);
+#endif
+	start_slack_timer(atlas_rq, atlas_job, slack);
+
+	raw_spin_unlock_irqrestore(&atlas_rq->lock, flags);
 
 	if (likely(sysctl_sched_atlas_advance_in_cfs)) {
 		atlas_set_scheduler(rq, atlas_job->tsk, SCHED_NORMAL);
@@ -1988,19 +2145,14 @@ static struct task_struct *pick_next_task_atlas(struct rq *rq,
 		atlas_set_scheduler(rq, atlas_job->tsk, SCHED_ATLAS);
 	}
 
-#ifdef CONFIG_ATLAS_TRACE
-	trace_atlas_job_slack(atlas_job);
-#endif
-	start_slack_timer(atlas_rq, atlas_job, slack);
-
 out_notask:
 	/* make sure all CFS tasks are runnable. Keep blocked tasks with ATLAS
 	 * jobs in ATLAS, so ATLAS can see the wakeup.
 	 */
 	for_each_job(job, &atlas_rq->jobs[CFS])
 	{
-		if (task_on_rq_queued(job->tsk) ||
-		    !task_has_atlas_job(job->tsk))
+		if (task_on_this_rq(job) && (task_on_rq_queued(job->tsk) ||
+					     !task_has_atlas_job(job->tsk)))
 			atlas_set_scheduler(rq, job->tsk, SCHED_NORMAL);
 	}
 	/* no task because of:
@@ -2054,6 +2206,10 @@ out_task:
 	atlas_debug(PICK_NEXT_TASK, JOB_FMT " to run.",
 		    JOB_ARG(atlas_rq->curr));
 
+	if (test_tsk_need_resched(job->tsk))
+		atlas_debug(PICK_NEXT_TASK, "%s/%d needs resched",
+			    job->tsk->comm, task_tid(job->tsk));
+
 	/* TODO: do this only if:
 	 * - negative slack for first job
 	 * - there is a following job
@@ -2071,11 +2227,12 @@ out_task:
 				continue;
 			if (atlas_rq->overload[cpu].pending)
 				continue;
+			atlas_rq->overload[cpu].pending = 1;
+			smp_call_function_single_async(
+					cpu, &atlas_rq->overload[cpu].csd);
 #ifdef CONFIG_ATLAS_TRACE
 			trace_atlas_ipi_send(cpu);
 #endif
-			smp_call_function_single_async(
-					cpu, &atlas_rq->overload[cpu].csd);
 		}
 #ifdef CONFIG_TRACE_ATLAS
 		trace_atlas_probe_overload_notified(NULL);
@@ -2150,34 +2307,40 @@ static void move_all_jobs(struct task_struct *p, struct atlas_rq *to)
 static void switched_from_atlas(struct rq *rq, struct task_struct *p)
 {
 #ifdef CONFIG_SMP
+	check_task_consistency(p, NULL);
+#if 0
 	p->atlas.last_cpu = task_cpu(p);
 #ifndef ATLAS_MIGRATE_IN_CFS
 	if (task_can_migrate(p)) {
-		cpumask_copy(&p->cpus_allowed, &p->atlas.last_mask);
-		p->nr_cpus_allowed = cpumask_weight(&p->cpus_allowed);
-		atlas_debug(PARTITION,
-			    "Restoring allowed CPUs for %s/%d to %*pb", p->comm,
-			    task_tid(p), cpumask_pr_args(&p->cpus_allowed));
+		restore_affinity_mask(p);
 	} else {
-		cpumask_copy(&p->atlas.last_mask, &p->cpus_allowed);
-		cpumask_clear(&p->cpus_allowed);
-		cpumask_set_cpu(p->atlas.last_cpu, &p->cpus_allowed);
-		p->nr_cpus_allowed = cpumask_weight(&p->cpus_allowed);
-		atlas_debug(PARTITION, "Restricting allowed CPUs for %s/%d to "
-				       "from %*pb to %*pb",
-			    p->comm, task_tid(p),
-			    cpumask_pr_args(&p->atlas.last_mask),
-			    cpumask_pr_args(&p->cpus_allowed));
+	  	raw_spin_lock(&rq->atlas.lock);
+		restrict_affinity_mask(p, p->atlas.last_cpu);
+		raw_spin_unlock(&rq->atlas.lock);
+		      if (cpumask_weight(&p->atlas.last_mask) <=
+			  cpumask_weight(&p->cpus_allowed)) {
+			      debug_output(p, NULL, -1);
+			      WARN_ON(1);
+		      }
+		      if (current != p &&
+			  current->sched_class == &stop_sched_class) {
+			      debug_output(p, NULL, -1);
+			      WARN_ON(1);
+		      }
 	}
 #endif
+#endif
+	check_task_consistency(p, NULL);
 #endif
 }
 
 static void switched_to_atlas(struct rq *rq, struct task_struct *p)
 {
 #ifdef CONFIG_SMP
+#if 0
 #ifndef ATLAS_MIGRATE_IN_CFS
 	do_set_cpus_allowed(p, &p->atlas.last_mask);
+#endif
 #endif
 #endif
 }
@@ -2213,9 +2376,8 @@ static int select_task_rq_atlas(struct task_struct *p, int prev_cpu,
 		raw_spin_unlock(&atlas_rq->lock);
 
 		/* otherwise job->original_cpu is not true anymore. Maybe it's
-		 * possible
-		 * to update job->original_cpu, but locking is gonna be a bitch.
-		 * original_cpu atomic?
+		 * possible to update job->original_cpu, but locking is gonna
+		 * be a bitch.  original_cpu atomic?
 		 */
 		if (migrated) {
 			BUG_ON(cpumask_test_cpu(prev_cpu, tsk_cpus_allowed(p)));
@@ -2227,8 +2389,8 @@ static int select_task_rq_atlas(struct task_struct *p, int prev_cpu,
 
 		cpu = worst_fit_rq(p);
 
-		atlas_debug(PARTITION, "CPU for Task %s/%d: %d", p->comm,
-			    task_tid(p), cpu);
+		atlas_debug(PARTITION, "CPU for Task %s/%d: %d %7lld", p->comm,
+			    task_tid(p), cpu, ktime_to_us(rq_load(atlas_rq)));
 
 		cpumask_clear(&p->cpus_allowed);
 		cpumask_set_cpu(cpu, &p->cpus_allowed);
@@ -2236,6 +2398,13 @@ static int select_task_rq_atlas(struct task_struct *p, int prev_cpu,
 		return cpu;
 	}
 
+	if (!cpumask_test_cpu(task_cpu(p), tsk_cpus_allowed(p))) {
+		//atlas_debug(PARTITION, "Task cpu %d is not in allowed set %*pb",
+		printk(KERN_ERR "Task cpu %d is not in allowed set %*pb\n",
+			    task_cpu(p), cpumask_pr_args(tsk_cpus_allowed(p)));
+		debug_rq(NULL);
+	}
+	WARN_ON(!cpumask_test_cpu(task_cpu(p), tsk_cpus_allowed(p)));
 	atlas_debug(PARTITION, "CPU for Task %s/%d", p->comm, task_tid(p));
 	return task_cpu(p);
 }
@@ -2269,13 +2438,19 @@ static void migrate_task_rq_atlas(struct task_struct *p, int next_cpu)
 	raw_spin_unlock(&prev_rq->lock);
 	raw_spin_unlock(&next_rq->lock);
 
+	resched_curr(cpu_rq(prev_cpu));
+#if 1
+	update_affinity_mask(p, next_cpu);
+#else
 	cpumask_clear(&p->cpus_allowed);
 	cpumask_set_cpu(next_cpu, &p->cpus_allowed);
+#endif
 }
 
 static void set_cpus_allowed_atlas(struct task_struct *p,
 				   const struct cpumask *new_mask)
 {
+	//BUG_ON(p->atlas.tp != NULL);
 	atlas_debug(PARTITION, "Updating CPU mask from %*pb to %*pb",
 		    cpumask_pr_args(&p->atlas.last_mask),
 		    cpumask_pr_args(new_mask));
@@ -2319,9 +2494,15 @@ static void destroy_first_job(struct task_struct *tsk);
 void exit_atlas(struct task_struct *p)
 {
 	unsigned long flags;
-	struct rq *const rq = task_rq_lock(p, &flags);
-	struct atlas_rq *const atlas_rq = &rq->atlas;
-	const bool atlas_task = task_has_jobs(p);
+	struct rq *rq;
+	struct atlas_rq *atlas_rq;
+	bool atlas_task;
+
+	hrtimer_cancel(&p->atlas.timer);
+
+	rq = task_rq_lock(p, &flags);
+	atlas_rq = &rq->atlas;
+	atlas_task = task_has_jobs(p);
 
 	BUG_ON(in_interrupt());
 	BUG_ON(p->policy == SCHED_ATLAS &&
@@ -2329,18 +2510,21 @@ void exit_atlas(struct task_struct *p)
 	BUG_ON(p->policy == SCHED_NORMAL &&
 	       p->sched_class != &fair_sched_class);
 
-	hrtimer_cancel(&p->atlas.timer);
-
 	raw_spin_lock(&atlas_rq->lock);
 	if (p == atlas_rq->slack_task)
 		stop_timer(atlas_rq);
 	raw_spin_unlock(&atlas_rq->lock);
 
+#if 0
 	if (atlas_task)
 		printk_deferred(KERN_EMERG "Switching task %s/%d back to CFS",
 				p->comm, task_tid(p));
+#endif
 
-	atlas_set_scheduler(task_rq(p), p, SCHED_NORMAL);
+	/* allow the thread to run to completion without getting CPU time from
+	 * ATLAS */
+	if (p->policy == SCHED_ATLAS)
+		atlas_set_scheduler(task_rq(p), p, SCHED_NORMAL);
 
 	task_rq_unlock(rq, p, &flags);
 
@@ -2351,13 +2535,15 @@ void exit_atlas(struct task_struct *p)
 	for (; task_has_jobs(p);)
 		destroy_first_job(p);
 
+#if 0
 	if (atlas_task) {
-		debug_rq();
+		debug_rq(NULL);
 		printk(KERN_EMERG "Task %s/%d in %s is exiting (%d/%d/%d)\n",
 		       p->comm, task_tid(p), sched_name(p->policy),
 		       rq->nr_running, atlas_rq->jobs[ATLAS].nr_running,
 		       atlas_rq->jobs[RECOVER].nr_running);
 	}
+#endif
 }
 
 // clang-format off
@@ -2415,7 +2601,8 @@ enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer)
 
 	WARN_ON(!job);
 
-	atlas_debug_(TIMER, JOB_FMT " missed its deadline ", JOB_ARG(job));
+	atlas_debug_(TIMER, JOB_FMT " missed its deadline %d", JOB_ARG(job),
+		     smp_processor_id());
 
 #ifdef CONFIG_ATLAS_TRACE
 	trace_atlas_job_hard_miss(job);
@@ -2929,12 +3116,20 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 	unsigned long flags;
 	struct sched_atlas_entity *se = &current->atlas;
 	struct atlas_job *next_job = NULL;
-	struct rq *rq = task_rq_lock(current, &flags);
-	struct atlas_rq *atlas_rq = &rq->atlas;
+	struct rq *rq;
+	struct atlas_rq *atlas_rq;
 
 	hrtimer_cancel(&se->timer);
 
+	rq = task_rq_lock(current, &flags);
+	atlas_rq = &rq->atlas;
+
+	check_rq_consistency(rq);
 	raw_spin_lock(&atlas_rq->lock);
+	/* TODO: Deadlock: calling hrtimer_cancel with rq->lock taken can cause
+	 * a deadlock, because timer_rq_fun takes rq->lock and all hrtimer
+	 * stuff is internally synchronized. 
+	 */
 	stop_timer(atlas_rq);
 	raw_spin_unlock(&atlas_rq->lock);
 
@@ -2945,7 +3140,7 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 
 	task_rq_unlock(rq, current, &flags);
 	rq = NULL;
-	atlas_rq = NULL;
+	//atlas_rq = NULL;
 
 	if (test_bit(ATLAS_HAS_JOB, &se->flags))
 		destroy_first_job(current);
@@ -2963,9 +3158,10 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 	 */
 	{
 		rq = task_rq_lock(current, &flags);
+		check_rq_consistency(rq);
 		atlas_set_scheduler(rq, current, SCHED_NORMAL);
 		task_rq_unlock(rq, current, &flags);
-		rq = NULL;
+		//rq = NULL;
 	}
 
 	for (;;) {
@@ -2977,9 +3173,13 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 		if (next_job)
 			break;
 
-		atlas_debug(SYS_NEXT, "%s/%d starts waiting.", current->comm,
-			    task_tid(current));
+		atlas_debug(SYS_NEXT, "%s/%d starts waiting. %d/%d/%d/%d",
+			    current->comm, task_tid(current), rq->nr_running,
+			    atlas_rq->jobs[ATLAS].nr_running,
+			    atlas_rq->jobs[RECOVER].nr_running,
+			    rq->cfs.h_nr_running);
 
+		check_task_consistency(current, NULL);
 		schedule();
 
 		if (signal_pending(current)) {
@@ -3002,11 +3202,14 @@ out_timer:
 		 * there is no job in the future)
 		 */
 		atlas_set_scheduler(rq, current, SCHED_NORMAL);
-	} else if (!job_missed_deadline(next_job, ktime_get()) &&
+	} 
+#if 0
+	else if (!job_missed_deadline(next_job, ktime_get()) &&
 		   !in_slacktime(atlas_rq)) {
 		/* Avoid running in CFS while another task is in slacktime. */
 		atlas_set_scheduler(rq, current, SCHED_ATLAS);
 	}
+#endif
 
 	resched_curr(rq);
 
@@ -3031,9 +3234,9 @@ out_timer:
 	 * instantaneously. SIGXCPU needs to be delivered irrespective of the
 	 * current policy of this task.
 	 */
-	hrtimer_start(&se->timer, next_job->deadline, HRTIMER_MODE_ABS_PINNED);
+	hrtimer_start(&se->timer, next_job->deadline, HRTIMER_MODE_ABS);
 
-	atlas_debug_(SYS_NEXT,
+	atlas_debug(SYS_NEXT,
 		     "Returning with " JOB_FMT " Job timer set to %lldms",
 		     JOB_ARG(next_job), ktime_to_ms(next_job->deadline));
 
@@ -3145,6 +3348,9 @@ SYSCALL_DEFINE4(atlas_update, pid_t, pid, uint64_t, id, struct timeval __user *,
 				exectime_ = job->exectime;
 
 			remove_job_from_tree(job);
+			atlas_debug_(SYS_UPDATE,
+				     "Updating job %llu for task %s/%d", id,
+				     tsk->comm, task_tid(tsk));
 			set_job_times(job, timeval_to_ktime(lexectime),
 				      deadline_);
 			insert_job_into_tree(atlas_rq, job);
@@ -3178,6 +3384,7 @@ SYSCALL_DEFINE2(atlas_remove, pid_t, pid, uint64_t, id)
 	unsigned long flags;
 	int ret = 0;
 	bool found_job = false;
+	bool started = false;
 
 	rcu_read_lock();
 	tsk = find_task_by_vpid(pid);
@@ -3185,19 +3392,27 @@ SYSCALL_DEFINE2(atlas_remove, pid_t, pid, uint64_t, id)
 	if (ret != 0)
 		goto out;
 
+
+	/* TODO: lock atlas_rq first, by looking at last_cpu */
 	spin_lock_irqsave(&tsk->atlas.jobs_lock, flags);
 	list_for_each_entry_safe(job, tmp, &tsk->atlas.jobs, list)
 	{
 		if (job->id == id) {
 			raw_spinlock_t *lock = &job->tree->rq->atlas.lock;
-			raw_spin_lock(lock);
+			if (job->started) {
+				started = true;
+				break;
+			}
+
 #ifdef CONFIG_ATLAS_TRACE
 			trace_atlas_job_remove(job);
 #endif
+			raw_spin_lock(lock);
 			remove_job_from_tree(job);
+			raw_spin_unlock(lock);
+
 			list_del(&job->list);
 			job_dealloc(job);
-			raw_spin_unlock(lock);
 			found_job = true;
 			break;
 		}
@@ -3208,6 +3423,13 @@ SYSCALL_DEFINE2(atlas_remove, pid_t, pid, uint64_t, id)
 		atlas_debug_(SYS_REMOVE,
 			     "No job with id %llu for task %s/%d found", id,
 			     tsk->comm, task_tid(tsk));
+		ret = -EINVAL;
+	}
+
+	if (started) {
+		atlas_debug_(SYS_REMOVE,
+			     "Job with id %llu for task %s/%d already running",
+			     id, tsk->comm, task_tid(tsk));
 		ret = -EINVAL;
 	}
 

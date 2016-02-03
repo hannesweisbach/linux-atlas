@@ -1355,7 +1355,7 @@ int select_task_rq(struct task_struct *p, int cpu, int sd_flags, int wake_flags)
 		cpu = p->sched_class->select_task_rq(p, cpu, sd_flags, wake_flags);
 
 #ifdef CONFIG_ATLAS
-	if (atlas_task(p) || task_has_jobs(p))
+	if (atlas_task(p))
 		cpu = p->sched_class->select_task_rq(p, cpu, sd_flags,
 						     wake_flags);
 #endif
@@ -1830,9 +1830,12 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->atlas.nr_jobs[CFS] = 0;
 
 	p->atlas.last_cpu = -1;
-	p->atlas.last_mask = CPU_MASK_NONE;
+	cpumask_copy(&p->atlas.last_mask, &p->cpus_allowed);
 
-	hrtimer_init(&p->atlas.timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_PINNED);
+	p->atlas.horizon = 0;
+	p->atlas.reservation = 0;
+
+	hrtimer_init(&p->atlas.timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
 	p->atlas.timer.function = &atlas_timer_task_function;
 #endif
 
@@ -4804,6 +4807,7 @@ void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
 		p->sched_class->set_cpus_allowed(p, new_mask);
 
 #ifdef CONFIG_ATLAS
+	cpumask_copy(&p->atlas.last_mask, new_mask);
 	if (task_can_migrate(p)) {
 		cpumask_copy(&p->cpus_allowed, new_mask);
 		p->nr_cpus_allowed = cpumask_weight(new_mask);
