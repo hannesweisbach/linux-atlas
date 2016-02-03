@@ -1085,9 +1085,19 @@ static inline void stop_timer(struct atlas_rq *atlas_rq)
 	}
 }
 
+void fixup_atlas_slack(struct atlas_rq *atlas_rq)
+{
+	raw_spin_lock(&atlas_rq->lock);
+	atlas_rq->slack_task = NULL;
+	if (has_jobs(&atlas_rq->jobs[ATLAS]))
+		inc_nr_running(&atlas_rq->jobs[ATLAS]);
+	if (has_jobs(&atlas_rq->jobs[RECOVER]))
+		inc_nr_running(&atlas_rq->jobs[RECOVER]);
+	raw_spin_unlock(&atlas_rq->lock);
+}
+
 static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 {
-	unsigned long flags;
 	struct atlas_rq *atlas_rq = container_of(timer, struct atlas_rq, timer);
 	struct rq *rq = rq_of(atlas_rq);
 
@@ -1100,9 +1110,12 @@ static enum hrtimer_restart timer_rq_func(struct hrtimer *timer)
 		case ATLAS_SLACK: {
 			atlas_debug_(TIMER, "End of SLACK for " JOB_FMT,
 				     JOB_ARG(atlas_rq->curr));
-
-			atlas_rq->slack_task = NULL;
-			inc_nr_running(&atlas_rq->jobs[ATLAS]);
+#if 0
+			if (raw_spin_trylock(&rq->lock)) {
+				fixup_atlas_slack();
+				raw_spin_unlock(&rq->lock);
+			}
+#endif
 		} break;
 		default:
 			atlas_debug_(TIMER, "Unkown or invalid timer target %d",
