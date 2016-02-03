@@ -45,6 +45,59 @@ unsigned int sysctl_sched_atlas_overload_push = 0;
 static struct list_head thread_pools = LIST_HEAD_INIT(thread_pools);
 static DEFINE_RAW_SPINLOCK(thread_pools_lock);
 
+static bool has_migrated_job(struct task_struct *task);
+
+static void restrict_affinity_mask(struct task_struct *p, int cpu)
+{
+	// BUG_ON(!atlas_task(p));
+	WARN_ON(task_cpu(p) != p->wake_cpu);
+	WARN_ON(p->state == TASK_WAKING);
+	WARN_ON(p->on_rq == TASK_ON_RQ_MIGRATING);
+
+	lockdep_assert_held(&task_rq(p)->lock);
+
+	if (!has_migrated_job(p) && !atlas_task(p))
+		cpumask_copy(&p->atlas.last_mask, &p->cpus_allowed);
+	cpumask_clear(&p->cpus_allowed);
+	cpumask_set_cpu(cpu, &p->cpus_allowed);
+	p->nr_cpus_allowed = cpumask_weight(&p->cpus_allowed);
+	if (!(cpumask_test_cpu(task_cpu(p), tsk_cpus_allowed(p)))) {
+		debug_output(p, NULL, cpu);
+		WARN_ON(1);
+	}
+	atlas_debug(PARTITION, "Restricting allowed CPUs for %s/%d "
+			       "from %*pb to %*pb %s\n",
+		    p->comm, task_tid(p), cpumask_pr_args(&p->atlas.last_mask),
+		    cpumask_pr_args(&p->cpus_allowed), task_sched_name(p));
+}
+
+static void restore_affinity_mask(struct task_struct *p)
+{
+	// BUG_ON(!atlas_task(p));
+	if (!cpumask_test_cpu(task_cpu(p), &p->atlas.last_mask)) {
+		debug_output(p, NULL, -1);
+		WARN_ON(1);
+	}
+	cpumask_copy(&p->cpus_allowed, &p->atlas.last_mask);
+	p->nr_cpus_allowed = cpumask_weight(&p->cpus_allowed);
+	atlas_debug(PARTITION, "Restoring allowed CPUs for %s/%d to %*pb",
+		    p->comm, task_tid(p), cpumask_pr_args(&p->cpus_allowed));
+}
+
+static void update_affinity_mask(struct task_struct *p, int new_cpu)
+{
+	if (!cpumask_test_cpu(new_cpu, tsk_cpus_allowed(p))) {
+		struct cpumask new_mask;
+		cpumask_clear(&new_mask);
+		cpumask_set_cpu(new_cpu, &new_mask);
+		atlas_debug(PARTITION, "Updating CPU mask from %*pb to %*pb",
+			    cpumask_pr_args(tsk_cpus_allowed(p)),
+			    cpumask_pr_args(&new_mask));
+		cpumask_copy(tsk_cpus_allowed(p), &new_mask);
+		p->nr_cpus_allowed = cpumask_weight(tsk_cpus_allowed(p));
+	}
+}
+
 static inline void inc_nr_running(struct atlas_job_tree *tree)
 {
 	if (tree != &tree->rq->atlas.jobs[CFS] && tree->nr_running == 0) {
@@ -2377,69 +2430,323 @@ enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer)
 static void schedule_job(struct atlas_job *const job)
 {
 	unsigned long flags;
-	struct rq *rq = task_rq_lock(job->tsk, &flags);
-	struct atlas_rq *atlas_rq = &rq->atlas;
+	struct task_struct * task = job->tsk;
+	struct rq *rq; // = task_rq_lock(job->tsk, &flags);
+	struct rq * other_rq;
+	struct atlas_rq *atlas_rq;// = &rq->atlas;
+	struct atlas_rq * other_atlas_rq;
 	struct sched_atlas_entity *se = &job->tsk->atlas;
-	bool wakeup;
 	bool can_migrate;
+	bool double_locking;
+	int other_cpu;
 
-	atlas_debug(SYS_SUBMIT, JOB_FMT " has %sjobs %s", JOB_ARG(job),
-		    task_has_jobs(job->tsk) ? "" : "no ",
-		    test_bit(ATLAS_BLOCKED, &se->flags) ? "blocked" : "");
+	BUG_ON(job == NULL);
+	BUG_ON(se == NULL);
+	BUG_ON(job->tsk == NULL);
 
+#if 0
 	raw_spin_lock(&atlas_rq->lock);
+	spin_lock(&se->jobs_lock);
+	check_rq_consistency(rq);
+#endif
 
+	/* lock block */
+	{
+	retry:
+		rq = task_rq_lock(task, &flags);
+		raw_spin_lock(&rq->atlas.lock);
+		spin_lock(&task->atlas.jobs_lock);
+		double_locking = has_migrated_job(task);
+		other_cpu = original_cpu(task);
+		spin_unlock(&task->atlas.jobs_lock);
+		raw_spin_unlock(&rq->atlas.lock);
+		task_rq_unlock(rq, task, &flags);
+
+		if (double_locking) {
+			local_irq_save(flags);
+
+			rq = task_rq(task);
+			other_rq = cpu_rq(other_cpu);
+			double_rq_lock(rq, other_rq);
+			if (task_rq(task) != rq) {
+				double_rq_unlock(rq, other_rq);
+				local_irq_restore(flags);
+				goto retry;
+			}
+			
+			atlas_rq = &rq->atlas;
+			other_atlas_rq = &other_rq->atlas;
+			if (atlas_rq == other_atlas_rq) {
+				debug_output(task, job, other_cpu);
+				WARN_ON(1);
+			}
+			double_raw_lock(&atlas_rq->lock, &other_atlas_rq->lock);
+		} else {
+			rq = task_rq_lock(task, &flags);
+			atlas_rq = &rq->atlas;
+			other_rq = NULL;
+			other_atlas_rq = NULL;
+			raw_spin_lock(&atlas_rq->lock);
+		}
+
+		spin_lock(&task->atlas.jobs_lock);
+		if (double_locking != has_migrated_job(task) ||
+		    other_cpu != original_cpu(task)) {
+			spin_unlock(&task->atlas.jobs_lock);
+			raw_spin_unlock(&atlas_rq->lock);
+			if (other_atlas_rq != NULL)
+				raw_spin_unlock(&other_atlas_rq->lock);
+			if (double_locking) {
+				double_rq_unlock(rq, other_rq);
+				local_irq_restore(flags);
+			} else {
+				task_rq_unlock(rq, task, &flags);
+			}
+			goto retry;
+		}
+	}
+	
 	can_migrate = task_can_migrate(job->tsk);
 
 	{
-		spin_lock(&se->jobs_lock);
+		//spin_lock(&se->jobs_lock);
 
-		wakeup = !task_has_jobs(job->tsk) &&
-			 test_bit(ATLAS_BLOCKED, &se->flags);
 		/* in submission order. */
-		list_add_tail(&job->list, &se->jobs);
-		spin_unlock(&se->jobs_lock);
+		if (job->thread_pool == NULL) {
+			list_add_tail(&job->list, &se->jobs);
+			if (list_is_singular(&task->atlas.jobs)) {
+				restrict_affinity_mask(task, task_cpu(task));
+			}
+		}
+
+		//spin_unlock(&se->jobs_lock);
 	}
 
 	{
-		/* Wakeup when in ATLAS-SLACK time. */
-		stop_timer(atlas_rq);
-
-		insert_job_into_tree(atlas_rq, job);
+		if (has_migrated_job(job->tsk)) {
+			//int cpu = original_cpu(job->tsk);
+			//struct rq * rq = cpu_rq(cpu);
+			//struct atlas_rq *orig_rq = &rq->atlas;
+			//raw_spin_lock_nested(&orig_rq->lock,
+			//		     SINGLE_DEPTH_NESTING);
+			//grab other rq lock, also
+			insert_job_into_tree(other_atlas_rq, job);
+			//raw_spin_unlock(&orig_rq->lock);
+		} else {
+			insert_job_into_tree(atlas_rq, job);
+		}
+		check_rq_consistency(rq);
 #ifdef CONFIG_ATLAS_TRACE
 		trace_atlas_job_submit(job);
 #endif
-		/* If there is no job before the new job in the RQ, timers need
-		 * to be adjusted or a reschedule is necessary.  The update
-		 * flag is used when no ATLAS tasks are runnable (i.e. tasks
-		 * are in slack/CFS/Recover)
+		/*
+		 * A resched is necessary, because the planned schedule might
+		 * have changed. Resched only the current RQ of the task; the
+		 * original RQ in case of a migrated task need not be scheduled,
+		 * since those jobs are not runnable, anyway.
 		 */
-		if (!pick_prev_job(job))
-			resched_curr(rq);
+		if (has_jobs(&atlas_rq->jobs[ATLAS]))
+			inc_nr_running(&atlas_rq->jobs[ATLAS]);
+		if (has_jobs(&atlas_rq->jobs[RECOVER]))
+			inc_nr_running(&atlas_rq->jobs[RECOVER]);
+#if 0
+		if (not_runnable(&atlas_rq->jobs[CFS]) &&
+                    has_jobs(&atlas_rq->jobs[CFS]))
+			inc_nr_running(&atlas_rq->jobs[CFS]);
+#endif
+		resched_curr(rq);
 
 		/* TODO: If task is in Recover/CFS but new job's deadline has
 		 * not passed, move the task to ATLAS
 		 */
 	}
 
-	if (can_migrate)
-		switched_from_atlas(rq, job->tsk);
+#if 0
+	if (can_migrate) {
+		// TODO: call sc->set_cpus_allowed() for rt and deadline
+		// scheduling classes or
+		// migrate to CFS.
+		//OLD: -> has_migrated_job has to be locked.
+		//switched_from_atlas(rq, job->tsk);
+		if (atlas_task(task)) {
+			restore_affinity_mask(task);
+		} else {
+			BUG_ON(has_migrated_job(task));
+			WARN_ON(task->wake_cpu != task_cpu(task));
+			restrict_affinity_mask(task, task_cpu(task));
+			//debug_output(p, job, -1);
+		}
+	}
+#else
+#endif
 
+	{
+		if (!atlas_task(task) && (task->nr_cpus_allowed > 1)) {
+			debug_output(task, job, -1);
+			WARN_ON(1);
+		}
+	}
+
+	atlas_debug(SYS_SUBMIT, JOB_FMT " %squeued%s J-CPU %d", JOB_ARG(job),
+		    task_on_rq_queued(job->tsk) ? "" : "not ",
+		    test_bit(ATLAS_BLOCKED, &se->flags) ? ", blocked" : "",
+		    cpu_of(job->tree->rq));
+
+	check_task_consistency(job->tsk, job);
+	check_rq_consistency(rq);
+	/* Cause wakeup when in ATLAS-SLACK time, by inc_nr_running. */
+	/* stop timer may call stop_slack_timer, which modifies rq->nr_running.
+	 */
+	if (in_slacktime(atlas_rq))
+		stop_timer(atlas_rq);
+	check_rq_consistency(rq);
+
+	BUG_ON(job == NULL);
+	BUG_ON(se == NULL);
+	BUG_ON(job->tsk == NULL);
+
+	spin_unlock(&se->jobs_lock);
 	raw_spin_unlock(&atlas_rq->lock);
-	task_rq_unlock(rq, job->tsk, &flags);
+	if (other_atlas_rq != NULL)
+		raw_spin_unlock(&other_atlas_rq->lock);
+
+	if (double_locking) {
+		double_rq_unlock(rq, other_rq);
+		local_irq_restore(flags);
+	} else {
+		task_rq_unlock(rq, task, &flags);
+	}
+
+	/* after unlocking job might not be valid anymore. */
 
 	/* task ->pi_lock; outside of task_rq_lock()/unlock() */
-	if (wakeup)
-		wake_up_process(job->tsk);
+	if (test_bit(ATLAS_BLOCKED, &se->flags)) {
+		check_task_consistency(task, NULL);
+		if (wake_up_process(task))
+			atlas_debug(SYS_SUBMIT, "Woke process %s/%d up. %lx",
+				    task->comm, task_tid(task), task->state);
+		else
+			atlas_debug(SYS_SUBMIT,
+				    "Process %s/%d already running. %lx",
+				    task->comm, task_tid(task), task->state);
+		check_task_consistency(task, NULL);
+	} else
+		atlas_debug(SYS_SUBMIT, "No wakup for process %s/%d %lx",
+			    task->comm, task_tid(task), task->state);
+	//check_rq_consistency(rq);
 }
 
 static void destroy_first_job(struct task_struct *tsk)
 {
+	/* TODO: this is racy. Not protected by any lock. */
+	unsigned long flags;
 	struct list_head *jobs = &tsk->atlas.jobs;
-	struct atlas_job *job =
-			list_first_entry_or_null(jobs, struct atlas_job, list);
+	struct atlas_job *job;
 
+	/* - migrated job, or
+	 * - migrated job has been already deleted (during do_exit)
+	 */
+	bool double_locking;
+	
+	struct atlas_job *next_job = NULL;
+	bool migrate_back = false;
+	struct rq *rq, *other_rq;
+	struct atlas_rq *atlas_rq, *other_atlas_rq;
+
+
+#if 0
+	printk(KERN_DEBUG "CPU %d, task cpu: %d, job cpu: %d %*pb\n",
+	       smp_processor_id(), task_cpu(job->tsk), cpu_of(job->tree->rq),
+	       cpumask_pr_args(&job->tsk->cpus_allowed));
+	if (task_cpu(job->tsk) != cpu_of(job->tree->rq)) {
+		debug_rq(cpu_rq(task_cpu(job->tsk)));
+		debug_rq(job->tree->rq);
+	}
+#endif
+
+retry:
+	rq = task_rq_lock(tsk, &flags);
+	raw_spin_lock(&rq->atlas.lock);
+	spin_lock(&tsk->atlas.jobs_lock);
+
+	job = list_first_entry_or_null(jobs, struct atlas_job, list);
 	BUG_ON(!job);
+	double_locking = job->original_cpu != -1 ||
+			 (task_rq(tsk) != job->tree->rq);
+
+	if (job->original_cpu != -1) {
+		WARN_ON(task_rq(tsk) != job->tree->rq);
+	}
+
+	if (double_locking) {
+		BUG_ON(task_rq(job->tsk) != this_rq());
+	}
+
+	if ((job->original_cpu != -1) &&
+	    (job->tree->rq != task_rq(job->tsk))) {
+		debug_output(tsk, job, -1);
+		WARN_ON(1);
+	}
+
+	other_rq = (job->original_cpu != -1) ? cpu_rq(job->original_cpu)
+					     : job->tree->rq;
+	spin_unlock(&tsk->atlas.jobs_lock);
+	raw_spin_unlock(&rq->atlas.lock);
+	task_rq_unlock(rq, tsk, &flags);
+
+	if (double_locking) {
+		local_irq_save(flags);
+		rq = this_rq();
+
+		/* oh boy.
+		 * rq is the task rq.
+		 * other_rq is the original rq.
+		 * if the job is migrated, the other rq is original_cpu, if not
+		 * (migrated jobs all deleted in do_exit()), use job->tree->rq,
+		 * since the job is queued on the original rq. */
+		if (rq == other_rq) {
+			debug_output(tsk, job, -1);
+			goto retry;
+		}
+
+		double_rq_lock(rq, other_rq);
+		if (task_rq(tsk) != rq) {
+			double_rq_unlock(rq, other_rq);
+			local_irq_restore(flags);
+			goto retry;
+		}
+		BUG_ON(smp_processor_id() != task_cpu(current));
+		atlas_rq = &rq->atlas;
+		other_atlas_rq = &other_rq->atlas;
+		if (atlas_rq == other_atlas_rq) {
+			debug_output(tsk, job, -1);
+			WARN_ON(1);
+		}
+		double_raw_lock(&atlas_rq->lock, &other_atlas_rq->lock);
+	} else {
+		rq = task_rq_lock(tsk, &flags);
+		atlas_rq = &rq->atlas;
+		other_rq = NULL;
+		other_atlas_rq = NULL;
+		raw_spin_lock(&atlas_rq->lock);
+	}
+
+	if (double_locking != (job->original_cpu != -1 ||
+			       (task_rq(tsk) != job->tree->rq))) {
+		raw_spin_unlock(&atlas_rq->lock);
+		if (other_atlas_rq != NULL)
+			raw_spin_unlock(&other_atlas_rq->lock);
+		if (double_locking) {
+			double_rq_unlock(rq, other_rq);
+			local_irq_restore(flags);
+		} else {
+			task_rq_unlock(rq, tsk, &flags);
+		}
+
+		goto retry;
+	}
+
+	spin_lock(&tsk->atlas.jobs_lock);
 
 #ifdef CONFIG_ATLAS_TRACE
 	trace_atlas_job_done(job);
@@ -2448,6 +2755,27 @@ static void destroy_first_job(struct task_struct *tsk)
 			      "%lld under %s (%s)",
 		    JOB_ARG(job), ktime_to_ms(ktime_get()),
 		    sched_name(current->policy), job_rq_name(job));
+
+
+	BUG_ON(!job_in_rq(job));
+
+	atlas_debug(SYS_NEXT, "Removing " JOB_FMT " from %s", JOB_ARG(job),
+		    job_rq_name(job));
+
+	/* Remove jobs from RQ, before potentially migrating task back.
+	 * Otherwise the scheduler might see a job on the RQ, with the task
+	 * migrated to another. */
+	if (job_in_rq(job)) {
+		unsigned long flags;
+		// raw_spinlock_t *atlas_lock = &job->tree->rq->atlas.lock;
+
+		// raw_spin_lock(atlas_lock);
+		check_rq_consistency(rq);
+		remove_job_from_tree(job);
+		check_rq_consistency(rq);
+		// raw_spin_unlock(atlas_lock);
+		// task_rq_unlock(rq, tsk, &flags);
+	}
 
 	if (job->original_cpu != -1 &&
 	    !test_bit(ATLAS_EXIT, &job->tsk->atlas.flags)) {
@@ -2458,104 +2786,140 @@ static void destroy_first_job(struct task_struct *tsk)
 		 */
 		unsigned long flags;
 		struct task_struct *task = job->tsk;
-		struct rq *rq = task_rq_lock(task, &flags);
-		struct atlas_rq *atlas_rq = &rq->atlas;
-		struct atlas_rq *other_rq = &cpu_rq(job->original_cpu)->atlas;
-		struct atlas_job *next_job;
+		// struct rq *rq = task_rq_lock(task, &flags);
+		// struct atlas_rq *atlas_rq = &rq->atlas;
+		// struct atlas_rq *other_rq =
+		// &cpu_rq(job->original_cpu)->atlas;
 		bool have_more_jobs = false;
 
-		double_raw_lock(&atlas_rq->lock, &other_rq->lock);
+		migrate_back = true;
+		if (atlas_rq == other_atlas_rq)
+			BUG();
 
-		atlas_debug(PARTITION, "Removing remote " JOB_FMT,
-			    JOB_ARG(job));
+		// double_raw_lock(&atlas_rq->lock, &other_rq->lock);
 
 		/* next job in list might already be migrated (by overload pull,
 		 * for example), so look for a non-migrated job.
 		 */
-		for (next_job = list_next_entry(job, list);
-		     next_job != NULL && next_job->original_cpu != -1;
-		     next_job = list_next_entry(next_job, list)) {
-			BUG_ON(next_job->original_cpu == smp_processor_id());
-			if (next_job->original_cpu != -1)
-				have_more_jobs = true;
-		}
-		atlas_debug(PARTITION, "next " JOB_FMT, JOB_ARG(next_job));
-		BUG_ON(next_job != NULL &&
-		       next_job->original_cpu == smp_processor_id());
+		// spin_lock(&task->atlas.jobs_lock);
+		if (job != list_last_entry(&task->atlas.jobs, struct atlas_job,
+					   list)) {
+			struct atlas_job *tmp = job;
+			list_for_each_entry_continue(tmp, &task->atlas.jobs,
+						     list)
+			{
+				if (!job_in_rq(tmp) || tmp->tree == NULL) {
+					/* weird. not properly serialized with
+					 * schedule_job */
+					WARN_ON(1);
+					continue;
+				}
 
-		if (next_job != NULL && rq_has_capacity(atlas_rq, next_job)) {
-			atlas_debug(PARTITION, "Migrating " JOB_FMT,
-				    JOB_ARG(next_job));
-			migrate_job(next_job, &this_rq()->atlas);
-			raw_spin_unlock(&other_rq->lock);
-			raw_spin_unlock(&atlas_rq->lock);
-			task_rq_unlock(rq, task, &flags);
-		} else if (!have_more_jobs) {
-			struct migration_arg arg = {task, job->original_cpu};
-			struct cpumask new_mask;
-			cpumask_clear(&new_mask);
-			cpumask_set_cpu(job->original_cpu, &new_mask);
-			cpumask_copy(&task->cpus_allowed, &new_mask);
-			task->nr_cpus_allowed = cpumask_weight(&new_mask);
-			/* Need help from migration thread: drop lock and wait.
-			 */
-			raw_spin_unlock(&other_rq->lock);
-			raw_spin_unlock(&atlas_rq->lock);
-			task_rq_unlock(rq, task, &flags);
-			atlas_debug(PARTITION, "Migrating task %s/%d from CPU "
-					       "%d to CPU %d",
-				    task->comm, task_tid(task),
-				    smp_processor_id(), job->original_cpu);
-			set_bit(ATLAS_MIGRATE_NO_JOBS, &task->atlas.flags);
-			stop_one_cpu(task_cpu(task), migration_cpu_stop, &arg);
-			tlb_migrate_finish(task->mm);
-			clear_bit(ATLAS_MIGRATE_NO_JOBS, &task->atlas.flags);
-		} else {
-			raw_spin_unlock(&other_rq->lock);
-			raw_spin_unlock(&atlas_rq->lock);
-			task_rq_unlock(rq, task, &flags);
+				if ((tmp->original_cpu == -1) &&
+				    rq_has_capacity(atlas_rq, tmp)) {
+					next_job = tmp;
+					migrate_back = false;
+					break;
+				}
+
+				if (tmp->original_cpu != -1) {
+					migrate_back = false;
+					break;
+				}
+			}
+		}
+		//spin_unlock(&task->atlas.jobs_lock);
+
+		/* the original rq might be blocked. so unblock it.
+		 * - other_rq has only jobs of migrated tasks and is hence blocked
+		 * - this task cannot migrate any jobs here b/c of capacity
+		 * - task is migrated back, but nr_running there is 0.
+		 */
+		if (migrate_back) {
+			if (has_jobs(&other_atlas_rq->jobs[ATLAS]))
+				inc_nr_running(&other_atlas_rq->jobs[ATLAS]);
+			if (has_jobs(&other_atlas_rq->jobs[RECOVER]))
+				inc_nr_running(&other_atlas_rq->jobs[RECOVER]);
+#if 0
+			if (not_runnable(&other_atlas_rq->jobs[CFS]) &&
+                    	    has_jobs(&other_atlas_rq->jobs[CFS]))
+				inc_nr_running(&other_atlas_rq->jobs[CFS]);
+#endif
+			update_affinity_mask(tsk, job->original_cpu);
+			/* inc_nr_running(CFS)? */
 		}
 
-		job->original_cpu = -1;
+		//job->original_cpu = -1;
+	}
+		
+
+	{
+		//unsigned long flags;
+		//spinlock_t *jobs_lock = &tsk->atlas.jobs_lock;
+		//spin_lock_irqsave(jobs_lock, flags);
+		list_del(&job->list);
+		//spin_unlock_irqrestore(jobs_lock, flags);
 	}
 
-	if (job_in_rq(job)) {
-		unsigned long flags;
-		struct rq *rq = task_rq_lock(tsk, &flags);
-		raw_spinlock_t *atlas_lock = &job->tree->rq->atlas.lock;
+#if 0
+	{
+		//unsigned long flags;
+		//struct rq *rq = task_rq_lock(job->tsk, &flags);
+		//spin_lock(&job->tsk->atlas.jobs_lock);
+		/* Restore original cpus_allowed */
+		if (task_can_migrate(job->tsk))
+			restore_affinity_mask(job->tsk);
+		//spin_unlock(&job->tsk->atlas.jobs_lock);
+		//task_rq_unlock(rq, job->tsk, &flags);
+	}
+#else
+	if (list_empty(&tsk->atlas.jobs)) {
+		restore_affinity_mask(tsk);
+	}
+#endif
 
-		if (is_cfs_job(job) && tsk->policy != SCHED_NORMAL) {
-			/* CFS job finished in ATLAS -> put it back into CFS. */
-			atlas_set_scheduler(rq, tsk, SCHED_NORMAL);
-		}
+	spin_unlock(&tsk->atlas.jobs_lock);
 
-		atlas_debug(SYS_NEXT, "Removing " JOB_FMT " from %s",
-			    JOB_ARG(job), job_rq_name(job));
+	if (next_job != NULL) {
+		atlas_debug(PARTITION, "Migrating " JOB_FMT, JOB_ARG(next_job));
+		migrate_job(next_job, smp_processor_id());
+	}
 
-		raw_spin_lock(atlas_lock);
-		remove_job_from_tree(job);
-		raw_spin_unlock(atlas_lock);
+	raw_spin_unlock(&atlas_rq->lock);
+	if (other_atlas_rq != NULL)
+		raw_spin_unlock(&other_atlas_rq->lock);
+
+	/* under rq lock */
+	if (is_cfs_job(job) && tsk->policy != SCHED_NORMAL) {
+		/* CFS job finished in ATLAS -> put it back into CFS. */
+		atlas_set_scheduler(rq, tsk, SCHED_NORMAL);
+	}
+
+	if (double_locking) {
+		double_rq_unlock(rq, other_rq);
+		local_irq_restore(flags);
+	} else {
 		task_rq_unlock(rq, tsk, &flags);
 	}
 
-	{
-		unsigned long flags;
-		spinlock_t *jobs_lock = &tsk->atlas.jobs_lock;
-		spin_lock_irqsave(jobs_lock, flags);
-		list_del(&job->list);
-		spin_unlock_irqrestore(jobs_lock, flags);
+	BUG_ON(job->tsk != tsk);
+
+	if (migrate_back && !test_bit(ATLAS_EXIT, &tsk->atlas.flags)) {
+		struct migration_arg arg = {tsk, job->original_cpu};
+		/* Need help from migration thread: drop lock and wait.
+		 */
+		atlas_debug(PARTITION, "Migrating task %s/%d from CPU "
+				       "%d to CPU %d",
+			    tsk->comm, task_tid(tsk), smp_processor_id(),
+			    job->original_cpu);
+		set_bit(ATLAS_MIGRATE_NO_JOBS, &tsk->atlas.flags);
+		stop_one_cpu(task_cpu(tsk), migration_cpu_stop, &arg);
+		tlb_migrate_finish(task->mm);
+		check_task_consistency(tsk, job);
+		clear_bit(ATLAS_MIGRATE_NO_JOBS, &tsk->atlas.flags);
 	}
 
-	{
-		unsigned long flags;
-		struct rq *rq = task_rq_lock(job->tsk, &flags);
-		spin_lock(&job->tsk->atlas.jobs_lock);
-		/* Restore original cpus_allowed */
-		if (task_can_migrate(job->tsk))
-			switched_from_atlas(rq, job->tsk);
-		spin_unlock(&job->tsk->atlas.jobs_lock);
-		task_rq_unlock(rq, job->tsk, &flags);
-	}
+	check_task_consistency(job->tsk, job);
 
 	job_dealloc(job);
 }
