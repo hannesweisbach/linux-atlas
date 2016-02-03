@@ -7,6 +7,7 @@
 #include <linux/ktime.h>
 #include <linux/init.h>
 #include <linux/uaccess.h>
+#include <linux/percpu.h>
 
 #include "sched.h"
 #include "atlas_common.h"
@@ -81,17 +82,19 @@ size_t print_atlas_job(const struct atlas_job const *job, char *buf,
 	if (job != NULL) {
 		return scnprintf(buf, size,
 				 "Job %5llu %8lld - %8lld (%8lld/%4lld/%4lld) "
-				 "%s/%5d %s %7s %d %d\n",
+				 "%s/%5d %*pb/%*pb %7s %7s %d %d %7s\n",
 				 job->id, ktime_to_ms(job_start(job)),
 				 ktime_to_ms(job->sdeadline),
 				 ktime_to_ms(job->deadline),
 				 ktime_to_ms(job->sexectime),
 				 ktime_to_ms(job->rexectime), job->tsk->comm,
 				 task_tid(job->tsk),
-				 !task_on_rq_queued(job->tsk) ? "blocked"
-							      : "       ",
+				 cpumask_pr_args(tsk_cpus_allowed(job->tsk)),
+				 cpumask_pr_args(&job->tsk->atlas.last_mask),
+				 !task_on_rq_queued(job->tsk) ? "blocked" : "",
 				 task_sched_name(job->tsk), job->original_cpu,
-				 task_cpu(job->tsk));
+				 task_cpu(job->tsk),
+				 job->started ? "started" : "");
 	}
 	return 0;
 }
@@ -135,7 +138,6 @@ size_t print_rqs(char *buf, size_t size)
 	int cpu;
 	for_each_possible_cpu(cpu) /*online?*/
 	{
-		unsigned long flags;
 		struct rq *rq = cpu_rq(cpu);
 		offset += print_rq(rq, &buf[offset], size - offset);
 	}
@@ -185,6 +187,7 @@ static int __init init_atlas_debugfs(void)
 		return -1;
 
 	for (flag = SYS_NEXT; flag < NUM_FLAGS; ++flag) {
+		atlas_debug_flags[flag] = 0;
 		atlas_debug_files[flag] = debugfs_create_bool(
 				flag2string(flag), mode, atlas_debug,
 				&atlas_debug_flags[flag]);
@@ -206,3 +209,38 @@ void deinit_atlas_debugfs(void)
 }
 
 fs_initcall(init_atlas_debugfs);
+
+static const size_t buf_size = 8192 * 2;
+DEFINE_PER_CPU(char *, atlas_buf);
+
+static int __init atlasbuf(void)
+{
+	int cpu;
+	int ret = 0;
+	for_each_possible_cpu(cpu)
+	{
+		per_cpu(atlas_buf, cpu) = kmalloc(buf_size, GFP_KERNEL);
+		printk(KERN_INFO "ATLAS debug buffer %p\n",
+		       per_cpu(atlas_buf, cpu));
+		if (per_cpu(atlas_buf, cpu) == NULL)
+			ret = -ENOMEM;
+	}
+
+	return ret;
+}
+core_initcall(atlasbuf);
+
+void debug_rq(struct rq *rq)
+{
+	char **buf = this_cpu_ptr(&atlas_buf);
+
+	if (*buf == NULL)
+		return;
+
+	(*buf)[0] = 0;
+	if (rq == NULL)
+		rq = this_rq();
+	print_rq(rq, *buf, buf_size);
+	printk_deferred(KERN_EMERG "%s\n", *buf);
+}
+
