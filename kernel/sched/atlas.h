@@ -75,9 +75,8 @@ struct atlas_rq {
 	struct atlas_csd overload[NR_CPUS];
 };
 
-//#define ATLAS_MIGRATE_IN_CFS
-
 void set_task_rq_atlas(struct task_struct *p, int next_cpu);
+void fixup_atlas_slack(struct atlas_rq *atlas_rq);
 
 static inline bool task_has_jobs(struct task_struct *p)
 {

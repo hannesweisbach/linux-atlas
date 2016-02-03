@@ -3194,6 +3194,13 @@ static void __sched notrace __schedule(bool preempt)
 
 	rq->clock_skip_update <<= 1; /* promote REQ to ACT */
 
+#ifdef CONFIG_ATLAS
+	if (rq->atlas.timer_target == ATLAS_NONE &&
+	    rq->atlas.slack_task != NULL) {
+		fixup_atlas_slack(&rq->atlas);
+	}
+#endif
+
 	switch_count = &prev->nivcsw;
 	if (!preempt && prev->state) {
 		if (unlikely(signal_pending_state(prev->state, prev))) {
