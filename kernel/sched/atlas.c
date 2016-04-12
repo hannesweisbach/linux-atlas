@@ -43,6 +43,7 @@ unsigned int sysctl_sched_atlas_advance_in_cfs = 1;
 unsigned int sysctl_sched_atlas_idle_job_stealing = 0;
 unsigned int sysctl_sched_atlas_wakeup_balancing = 0;
 unsigned int sysctl_sched_atlas_overload_push = 0;
+unsigned int sysctl_sched_atlas_worst_fit = 1;
 
 static struct list_head thread_pools = LIST_HEAD_INIT(thread_pools);
 static DEFINE_RAW_SPINLOCK(thread_pools_lock);
@@ -1501,8 +1502,11 @@ static void thread_pool_add(struct atlas_thread_pool *tp, struct atlas_job *job)
 
 	job->thread_pool = tp;
 
-	/* TODO: dispatch on sysctl variable */
-	thread_pool_add_worst_fit__(tp, job, true);
+	if (sysctl_sched_atlas_worst_fit) {
+		thread_pool_add_worst_fit__(tp, job, true);
+	} else {
+		thread_pool_add_best_fit__(top, job, true);
+	}
 	thread_pool_insert_job(job);
 }
 
