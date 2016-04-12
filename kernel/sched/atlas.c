@@ -1464,6 +1464,36 @@ static void thread_pool_add_worst_fit__(struct atlas_thread_pool *tp,
 	}
 }
 
+static void thread_pool_add_best_fit__(struct atlas_thread_pool *tp,
+				       struct atlas_job *job, const bool task)
+{
+	struct sched_atlas_entity *atlas_se;
+	ktime_t min_rem = ktime_set(KTIME_SEC_MAX, 0);
+	ktime_t available = ktime_sub(job->deadline, ktime_get());
+
+	job->tsk = NULL;
+
+	list_for_each_entry(atlas_se, &tp->tasks, tp_list)
+	{
+		struct task_struct *task = atlas_task_of(atlas_se);
+		ktime_t dbf, remainder;
+		if (task)
+			dbf = task_dbf(task, job->deadline);
+		else
+			dbf = rq_dbf(atlas_rq_of(task), job->deadline);
+		remainder = ktime_sub(available, dbf);
+		if (ktime_compare(remainder, ktime_set(0, 0)) > 0 &&
+		    ktime_compare(remainder, min_rem) < 0) {
+			min_rem = remainder;
+			job->tsk = task;
+		}
+	}
+
+	/* fallback */
+	if (job->tsk == NULL)
+		thread_pool_add_worst_fit__(tp, job, task);
+}
+
 static void thread_pool_add(struct atlas_thread_pool *tp, struct atlas_job *job)
 {
 	BUG_ON(job->tsk != NULL);
