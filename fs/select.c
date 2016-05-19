@@ -80,7 +80,11 @@ long select_estimate_accuracy(struct timespec *tv)
 	 * Realtime tasks get a slack of 0 for obvious reasons.
 	 */
 
+#ifdef CONFIG_ATLAS
 	if (rt_task(current) || atlas_task(current))
+#else
+	if (rt_task(current))
+#endif
 		return 0;
 
 	ktime_get_ts(&now);

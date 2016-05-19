@@ -1564,8 +1564,12 @@ long hrtimer_nanosleep(struct timespec *rqtp, struct timespec __user *rmtp,
 	unsigned long slack;
 
 	slack = current->timer_slack_ns;
+#ifdef CONFIG_ATLAS
 	if (dl_task(current) || rt_task(current) || atlas_task(current))
-		slack = 0;
+#else
+	if (dl_task(current) || rt_task(current))
+#endif
+	slack = 0;
 
 	hrtimer_init_on_stack(&t.timer, clockid, mode);
 	hrtimer_set_expires_range_ns(&t.timer, timespec_to_ktime(*rqtp), slack);

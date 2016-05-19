@@ -3356,8 +3356,9 @@ static void __setscheduler(struct rq *rq, struct task_struct *p,
 	 * so we have to check for it first. */
 	if (p->policy == SCHED_ATLAS)
 		p->sched_class = &atlas_sched_class;
+	else
 #endif
-	else if (dl_prio(p->prio))
+	if (dl_prio(p->prio))
 		p->sched_class = &dl_sched_class;
 	else if (rt_prio(p->prio))
 		p->sched_class = &rt_sched_class;
