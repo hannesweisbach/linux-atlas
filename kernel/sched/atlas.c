@@ -1505,7 +1505,7 @@ static void thread_pool_add(struct atlas_thread_pool *tp, struct atlas_job *job)
 	if (sysctl_sched_atlas_worst_fit) {
 		thread_pool_add_worst_fit__(tp, job, true);
 	} else {
-		thread_pool_add_best_fit__(top, job, true);
+		thread_pool_add_best_fit__(tp, job, true);
 	}
 	thread_pool_insert_job(job);
 }
