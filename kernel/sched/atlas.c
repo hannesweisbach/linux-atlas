@@ -3155,6 +3155,9 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 
 	hrtimer_cancel(&se->timer);
 
+	if (next == NULL)
+		return -EFAULT;
+
 	rq = task_rq_lock(current, &flags);
 	atlas_rq = &rq->atlas;
 
@@ -3181,53 +3184,27 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 	clear_bit(ATLAS_HAS_JOB, &se->flags);
 
 	next_job = next_job_or_null(se);
-	if (next_job != NULL)
-		goto out_timer;
-
 
 	/* if there is no job now, set the scheduler to CFS. If left in ATLAS
 	 * or Recover, upon wakeup (for example due to a signal), they would
 	 * encounter no jobs present and an infinite scheduling loop would be
 	 * the result.
 	 */
-	{
+	if (next_job == NULL) {
+		uint64_t dummy_id = 0;
 		rq = task_rq_lock(current, &flags);
 		check_rq_consistency(rq);
 		atlas_set_scheduler(rq, current, SCHED_NORMAL);
 		task_rq_unlock(rq, current, &flags);
-		//rq = NULL;
-	}
-
-	for (;;) {
-		set_bit(ATLAS_BLOCKED, &se->flags);
-		set_current_state(TASK_INTERRUPTIBLE);
-
-		next_job = next_job_or_null(se);
-
-		if (next_job)
-			break;
-
-		atlas_debug(SYS_NEXT, "%s/%d starts waiting. %d/%d/%d/%d",
-			    current->comm, task_tid(current), rq->nr_running,
-			    atlas_rq->jobs[ATLAS].nr_running,
-			    atlas_rq->jobs[RECOVER].nr_running,
-			    rq->cfs.h_nr_running);
-
-		check_task_consistency(current, NULL);
-		schedule();
-
-		if (signal_pending(current)) {
-			atlas_debug(SYS_NEXT, "Signal in task %s/%d",
-				    current->comm, task_tid(current));
-			clear_bit(ATLAS_BLOCKED, &se->flags);
-			return -ERESTARTSYS;
+		if (copy_to_user(next, &dummy_id, sizeof(uint64_t))) {
+			printk(KERN_ERR "Invalid pointer for next work id: %p",
+			       next);
+			return -EFAULT;
 		}
+
+		return 0;
 	}
 
-	__set_current_state(TASK_RUNNING);
-	clear_bit(ATLAS_BLOCKED, &se->flags);
-
-out_timer:
 	rq = task_rq_lock(current, &flags);
 	atlas_rq = &rq->atlas;
 
@@ -3251,8 +3228,7 @@ out_timer:
 	rq = NULL;
 	atlas_rq = NULL;
 
-	if (next == NULL ||
-	    copy_to_user(next, &next_job->id, sizeof(uint64_t))) {
+	if (copy_to_user(next, &next_job->id, sizeof(uint64_t))) {
 		printk(KERN_ERR "Invalid pointer for next work id: %p", next);
 		return -EFAULT;
 	}
