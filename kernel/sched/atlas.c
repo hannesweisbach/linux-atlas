@@ -3155,9 +3155,6 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 
 	hrtimer_cancel(&se->timer);
 
-	if (next == NULL)
-		return -EFAULT;
-
 	rq = task_rq_lock(current, &flags);
 	atlas_rq = &rq->atlas;
 
@@ -3191,16 +3188,10 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 	 * the result.
 	 */
 	if (next_job == NULL) {
-		uint64_t dummy_id = 0;
 		rq = task_rq_lock(current, &flags);
 		check_rq_consistency(rq);
 		atlas_set_scheduler(rq, current, SCHED_NORMAL);
 		task_rq_unlock(rq, current, &flags);
-		if (copy_to_user(next, &dummy_id, sizeof(uint64_t))) {
-			printk(KERN_ERR "Invalid pointer for next work id: %p",
-			       next);
-			return -EFAULT;
-		}
 
 		return 0;
 	}
@@ -3228,7 +3219,8 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 	rq = NULL;
 	atlas_rq = NULL;
 
-	if (copy_to_user(next, &next_job->id, sizeof(uint64_t))) {
+	if (next == NULL ||
+	    copy_to_user(next, &next_job->id, sizeof(uint64_t))) {
 		printk(KERN_ERR "Invalid pointer for next work id: %p", next);
 		return -EFAULT;
 	}
@@ -3250,7 +3242,7 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 		     "Returning with " JOB_FMT " Job timer set to %lldms",
 		     JOB_ARG(next_job), ktime_to_ms(next_job->deadline));
 
-	return 0;
+	return 1;
 }
 
 static int validate_tid(struct task_struct *tsk, pid_t pid, enum debug caller)
