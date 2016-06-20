@@ -1150,8 +1150,8 @@ static inline void __setup_rq_timer(struct atlas_rq *atlas_rq, ktime_t timeout)
 	assert_raw_spin_locked(&rq_of(atlas_rq)->lock);
 	BUG_ON(atlas_rq->timer_target == ATLAS_NONE);
 
-	__hrtimer_start_range_ns(&atlas_rq->timer, timeout, 0,
-				 HRTIMER_MODE_ABS_PINNED, 0);
+	hrtimer_start_range_ns(&atlas_rq->timer, timeout, 0,
+			       HRTIMER_MODE_ABS_PINNED);
 }
 
 ktime_t slacktime(struct atlas_job *job)
@@ -2443,42 +2443,9 @@ static int select_task_rq_atlas(struct task_struct *p, int prev_cpu,
 	return task_cpu(p);
 }
 
-static void migrate_task_rq_atlas(struct task_struct *p, int next_cpu)
+static void migrate_task_rq_atlas(struct task_struct *p)
 {
-	int prev_cpu = task_cpu(p);
-	struct atlas_rq *prev_rq = &cpu_rq(prev_cpu)->atlas;
-	struct atlas_rq *next_rq = &cpu_rq(next_cpu)->atlas;
-
-#ifdef CONFIG_ATLAS_TRACE
-	trace_atlas_task_migrate(p, next_cpu);
-#endif
-	double_raw_lock(&prev_rq->lock, &next_rq->lock);
-
-	stop_timer(prev_rq);
-
-	/* up the count, if the RQ is blocked */
-	if (has_jobs(&prev_rq->jobs[ATLAS]))
-		inc_nr_running(&prev_rq->jobs[ATLAS]);
-
-	if (has_jobs(&prev_rq->jobs[RECOVER]))
-		inc_nr_running(&prev_rq->jobs[RECOVER]);
-
-	if (not_runnable(&prev_rq->jobs[CFS]) && has_jobs(&prev_rq->jobs[CFS]))
-		inc_nr_running(&prev_rq->jobs[CFS]);
-
-	if (!test_bit(ATLAS_MIGRATE_NO_JOBS, &p->atlas.flags))
-		move_all_jobs(p, next_rq);
-
-	raw_spin_unlock(&prev_rq->lock);
-	raw_spin_unlock(&next_rq->lock);
-
-	resched_curr(cpu_rq(prev_cpu));
-#if 1
-	update_affinity_mask(p, next_cpu);
-#else
-	cpumask_clear(&p->cpus_allowed);
-	cpumask_set_cpu(next_cpu, &p->cpus_allowed);
-#endif
+	/* TODO: remove load */
 }
 
 static void set_cpus_allowed_atlas(struct task_struct *p,
@@ -2506,8 +2473,35 @@ static void set_cpus_allowed_atlas(struct task_struct *p,
 
 void set_task_rq_atlas(struct task_struct *p, int next_cpu)
 {
-	if (task_cpu(p) != next_cpu)
-		migrate_task_rq_atlas(p, next_cpu);
+	if (task_cpu(p) != next_cpu) {
+		int prev_cpu = task_cpu(p);
+		struct atlas_rq *prev_rq = &cpu_rq(prev_cpu)->atlas;
+		struct atlas_rq *next_rq = &cpu_rq(next_cpu)->atlas;
+
+		double_raw_lock(&prev_rq->lock, &next_rq->lock);
+
+		stop_timer(prev_rq);
+
+		/* up the count, if the RQ is blocked */
+		if (has_jobs(&prev_rq->jobs[ATLAS]))
+			inc_nr_running(&prev_rq->jobs[ATLAS]);
+
+		if (has_jobs(&prev_rq->jobs[RECOVER]))
+			inc_nr_running(&prev_rq->jobs[RECOVER]);
+
+		if (not_runnable(&prev_rq->jobs[CFS]) &&
+		    has_jobs(&prev_rq->jobs[CFS]))
+			inc_nr_running(&prev_rq->jobs[CFS]);
+
+		if (!test_bit(ATLAS_MIGRATE_NO_JOBS, &p->atlas.flags))
+			move_all_jobs(p, next_rq);
+
+		raw_spin_unlock(&prev_rq->lock);
+		raw_spin_unlock(&next_rq->lock);
+
+		resched_curr(cpu_rq(prev_cpu));
+		update_affinity_mask(p, next_cpu);
+	}
 }
 
 static void task_waking_atlas(struct task_struct *p)
