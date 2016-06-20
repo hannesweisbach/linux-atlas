@@ -1087,11 +1087,6 @@ static struct rq *move_queued_task(struct rq *rq, struct task_struct *p, int new
 	return rq;
 }
 
-struct migration_arg {
-	struct task_struct *task;
-	int dest_cpu;
-};
-
 /*
  * Move (not current) task off this cpu, onto dest cpu. We're doing
  * this because either it can't run here any more (set_cpus_allowed()
@@ -3258,7 +3253,6 @@ static void __sched notrace __schedule(bool preempt)
 	}
 
 	balance_callback(rq);
-	post_schedule(rq);
 
 	sched_preempt_enable_no_resched();
 }
