@@ -3147,7 +3147,7 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 	struct rq *rq;
 	struct atlas_rq *atlas_rq;
 
-	hrtimer_cancel(&se->timer);
+	//hrtimer_cancel(&se->timer);
 
 	rq = task_rq_lock(current, &flags);
 	atlas_rq = &rq->atlas;
@@ -3236,7 +3236,7 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 	 * instantaneously. SIGXCPU needs to be delivered irrespective of the
 	 * current policy of this task.
 	 */
-	hrtimer_start(&se->timer, next_job->deadline, HRTIMER_MODE_ABS);
+	//hrtimer_start(&se->timer, next_job->deadline, HRTIMER_MODE_ABS);
 
 	atlas_debug(SYS_NEXT,
 		     "Returning with " JOB_FMT " Job timer set to %lldms",
