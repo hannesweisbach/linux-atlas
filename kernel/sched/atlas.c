@@ -3213,9 +3213,15 @@ SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 	rq = NULL;
 	atlas_rq = NULL;
 
-	if (next == NULL ||
-	    copy_to_user(next, &next_job->id, sizeof(uint64_t))) {
-		printk(KERN_ERR "Invalid pointer for next work id: %p", next);
+	if (next != NULL) {
+		unsigned long n = 0;
+		if ((n = copy_to_user(next, &next_job->id, sizeof(uint64_t)))) {
+			printk(KERN_ERR "Invalid work id pointer: %p %lu\n",
+			       next, n);
+			return -EFAULT;
+		}
+	} else {
+		printk(KERN_ERR "Invalid work id pointer.\n");
 		return -EFAULT;
 	}
 	set_bit(ATLAS_HAS_JOB, &se->flags);
