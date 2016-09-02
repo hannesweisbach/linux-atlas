@@ -2230,7 +2230,7 @@ out_task:
 #ifdef CONFIG_ATLAS_TRACE
 	if (job != atlas_rq->curr) {
 		if (atlas_rq->curr != NULL)
-			trace_atlas_job_deselect(job);
+			trace_atlas_job_deselect(atlas_rq->curr);
 		trace_atlas_job_select(job);
 	}
 #endif
