@@ -12,7 +12,7 @@
 #include "sched.h"
 #include "atlas_common.h"
 
-static u32 atlas_debug_flags[NUM_FLAGS];
+static bool atlas_debug_flags[NUM_FLAGS];
 static struct dentry *atlas_debug;
 static struct dentry *atlas_debug_rq;
 static struct dentry *atlas_debug_files[NUM_FLAGS];
