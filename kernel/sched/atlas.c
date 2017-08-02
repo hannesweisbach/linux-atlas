@@ -1874,7 +1874,7 @@ static void enqueue_task_atlas(struct rq *rq, struct task_struct *p, int flags)
 	atlas_debug(ENQUEUE, "%s/%d " JOB_FMT "%s%s (%d/%d)", p->comm,
 		    task_tid(p), JOB_ARG(atlas_rq->curr),
 		    (flags & ENQUEUE_WAKEUP) ? " (Wakeup)" : "",
-		    (flags & ENQUEUE_WAKING) ? " (Waking)" : "", rq->nr_running,
+		    (flags & ENQUEUE_MIGRATED) ? " (Migrated)" : "", rq->nr_running,
 		    atlas_rq->jobs[ATLAS].nr_running);
 }
 
@@ -2036,7 +2036,8 @@ void atlas_cfs_blocked(struct rq *rq, struct task_struct *p)
 }
 
 static struct task_struct *pick_next_task_atlas(struct rq *rq,
-						struct task_struct *prev)
+						struct task_struct *prev,
+						struct pin_cookie cookie)
 {
 	struct atlas_rq *atlas_rq = &rq->atlas;
 	struct sched_atlas_entity *se;
@@ -2521,8 +2522,8 @@ static void destroy_first_job(struct task_struct *tsk);
  */
 void exit_atlas(struct task_struct *p)
 {
-	unsigned long flags;
 	struct rq *rq;
+	struct rq_flags flags;
 	struct atlas_rq *atlas_rq;
 	bool atlas_task;
 
@@ -2644,7 +2645,8 @@ enum hrtimer_restart atlas_timer_task_function(struct hrtimer *timer)
 
 static void schedule_job(struct atlas_job *const job)
 {
-	unsigned long flags;
+	unsigned long flags = 0;
+	struct rq_flags rq_flags;
 	struct task_struct * task = job->tsk;
 	struct rq *rq; // = task_rq_lock(job->tsk, &flags);
 	struct rq * other_rq;
@@ -2668,14 +2670,14 @@ static void schedule_job(struct atlas_job *const job)
 	/* lock block */
 	{
 	retry:
-		rq = task_rq_lock(task, &flags);
+		rq = task_rq_lock(task, &rq_flags);
 		raw_spin_lock(&rq->atlas.lock);
 		spin_lock(&task->atlas.jobs_lock);
 		double_locking = has_migrated_job(task);
 		other_cpu = original_cpu(task);
 		spin_unlock(&task->atlas.jobs_lock);
 		raw_spin_unlock(&rq->atlas.lock);
-		task_rq_unlock(rq, task, &flags);
+		task_rq_unlock(rq, task, &rq_flags);
 
 		if (double_locking) {
 			local_irq_save(flags);
@@ -2697,7 +2699,7 @@ static void schedule_job(struct atlas_job *const job)
 			}
 			double_raw_lock(&atlas_rq->lock, &other_atlas_rq->lock);
 		} else {
-			rq = task_rq_lock(task, &flags);
+			rq = task_rq_lock(task, &rq_flags);
 			atlas_rq = &rq->atlas;
 			other_rq = NULL;
 			other_atlas_rq = NULL;
@@ -2715,7 +2717,7 @@ static void schedule_job(struct atlas_job *const job)
 				double_rq_unlock(rq, other_rq);
 				local_irq_restore(flags);
 			} else {
-				task_rq_unlock(rq, task, &flags);
+				task_rq_unlock(rq, task, &rq_flags);
 			}
 			goto retry;
 		}
@@ -2829,7 +2831,7 @@ static void schedule_job(struct atlas_job *const job)
 		double_rq_unlock(rq, other_rq);
 		local_irq_restore(flags);
 	} else {
-		task_rq_unlock(rq, task, &flags);
+		task_rq_unlock(rq, task, &rq_flags);
 	}
 
 	/* after unlocking job might not be valid anymore. */
@@ -2854,7 +2856,8 @@ static void schedule_job(struct atlas_job *const job)
 static void destroy_first_job(struct task_struct *tsk)
 {
 	/* TODO: this is racy. Not protected by any lock. */
-	unsigned long flags;
+	unsigned long flags = 0;
+	struct rq_flags rq_flags;
 	struct list_head *jobs = &tsk->atlas.jobs;
 	struct atlas_job *job;
 
@@ -2880,7 +2883,7 @@ static void destroy_first_job(struct task_struct *tsk)
 #endif
 
 retry:
-	rq = task_rq_lock(tsk, &flags);
+	rq = task_rq_lock(tsk, &rq_flags);
 	raw_spin_lock(&rq->atlas.lock);
 	spin_lock(&tsk->atlas.jobs_lock);
 
@@ -2907,7 +2910,7 @@ retry:
 					     : job->tree->rq;
 	spin_unlock(&tsk->atlas.jobs_lock);
 	raw_spin_unlock(&rq->atlas.lock);
-	task_rq_unlock(rq, tsk, &flags);
+	task_rq_unlock(rq, tsk, &rq_flags);
 
 	if (double_locking) {
 		local_irq_save(flags);
@@ -2939,7 +2942,7 @@ retry:
 		}
 		double_raw_lock(&atlas_rq->lock, &other_atlas_rq->lock);
 	} else {
-		rq = task_rq_lock(tsk, &flags);
+		rq = task_rq_lock(tsk, &rq_flags);
 		atlas_rq = &rq->atlas;
 		other_rq = NULL;
 		other_atlas_rq = NULL;
@@ -2955,7 +2958,7 @@ retry:
 			double_rq_unlock(rq, other_rq);
 			local_irq_restore(flags);
 		} else {
-			task_rq_unlock(rq, tsk, &flags);
+			task_rq_unlock(rq, tsk, &rq_flags);
 		}
 
 		goto retry;
@@ -3114,7 +3117,7 @@ retry:
 		double_rq_unlock(rq, other_rq);
 		local_irq_restore(flags);
 	} else {
-		task_rq_unlock(rq, tsk, &flags);
+		task_rq_unlock(rq, tsk, &rq_flags);
 	}
 
 	BUG_ON(job->tsk != tsk);
@@ -3141,7 +3144,7 @@ retry:
 
 SYSCALL_DEFINE1(atlas_next, uint64_t *, next)
 {
-	unsigned long flags;
+	struct rq_flags flags;
 	struct sched_atlas_entity *se = &current->atlas;
 	struct atlas_job *next_job = NULL;
 	struct rq *rq;
@@ -3436,9 +3439,10 @@ SYSCALL_DEFINE2(atlas_remove, pid_t, pid, uint64_t, id)
 	}
 
 	if (!task_has_jobs(tsk) && tsk->policy == SCHED_ATLAS) {
-		struct rq *rq = task_rq_lock(tsk, &flags);
+		struct rq_flags rq_flags;
+		struct rq *rq = task_rq_lock(tsk, &rq_flags);
 		atlas_set_scheduler(rq, tsk, SCHED_NORMAL);
-		task_rq_unlock(rq, tsk, &flags);
+		task_rq_unlock(rq, tsk, &rq_flags);
 	}
 
 out:
